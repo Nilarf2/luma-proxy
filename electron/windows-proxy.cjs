@@ -26,7 +26,8 @@ async function ps(script, timeout = 30000) {
 
 const key = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings";
 const notify = `Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class LumaInet { [DllImport("wininet.dll", SetLastError=true)] public static extern bool InternetSetOption(IntPtr h,int o,IntPtr b,int l); }'; [LumaInet]::InternetSetOption([IntPtr]::Zero,39,[IntPtr]::Zero,0) | Out-Null; [LumaInet]::InternetSetOption([IntPtr]::Zero,37,[IntPtr]::Zero,0) | Out-Null;`;
-async function read() { return JSON.parse(await ps(`$p=Get-ItemProperty '${key}'; @{ProxyEnable=$p.ProxyEnable;ProxyServer=$p.ProxyServer;ProxyOverride=$p.ProxyOverride} | ConvertTo-Json -Compress`)); }
+async function read() { return JSON.parse(await ps(`$p=Get-ItemProperty '${key}'; @{ProxyEnable=$p.ProxyEnable;ProxyServer=$p.ProxyServer;ProxyOverride=$p.ProxyOverride;AutoConfigURL=$p.AutoConfigURL} | ConvertTo-Json -Compress`)); }
+const matches = (current, ours) => !!ours && Object.entries(ours).every(([key, value]) => (current[key] ?? null) === (value ?? null));
 async function write(values) {
   const encoded = Buffer.from(JSON.stringify(values), 'utf8').toString('base64');
   await ps(`$ErrorActionPreference='Stop'; $v=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')) | ConvertFrom-Json; foreach($p in $v.PSObject.Properties) { if($null -eq $p.Value) { Remove-ItemProperty -Path '${key}' -Name $p.Name -ErrorAction SilentlyContinue } else { $t='String'; if($p.Name -eq 'ProxyEnable'){$t='DWord'}; New-ItemProperty -Path '${key}' -Name $p.Name -Value $p.Value -PropertyType $t -Force | Out-Null } }; ${notify}`);
@@ -36,15 +37,17 @@ class WindowsProxy {
   async inspect() {
     const current = await read();
     const journal = fs.existsSync(this.file) ? JSON.parse(fs.readFileSync(this.file, 'utf8')) : null;
-    const matches = !!journal && current.ProxyServer === journal.ours?.ProxyServer && current.ProxyEnable === journal.ours?.ProxyEnable;
-    const ownership = matches ? (journal.ownerPid === process.pid ? 'ours' : 'stale') : current.ProxyEnable === 1 ? 'external' : 'disabled';
+    const owned = !!journal && matches(current, journal.ours);
+    const ownership = owned ? (journal.ownerPid === process.pid ? 'ours' : 'stale') : current.ProxyEnable === 1 || !!current.AutoConfigURL ? 'external' : 'disabled';
     return { ownership, recoveryPending: !!journal };
   }
-  async enable(port, corePid) {
+  async enable(port, corePid, bypass = '<local>;localhost;127.*;[::1]', options = {}) {
     if (this.enabled) return;
     // Preserve the original snapshot until recovery has completed successfully.
     if (fs.existsSync(this.file)) await this.restore();
-    const previous = await read(); const ours = { ProxyEnable: 1, ProxyServer: `127.0.0.1:${port}`, ProxyOverride: '<local>;localhost;127.*;[::1]' };
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw Error('代理端口无效');
+    if (options.pacUrl && !/^http:\/\/127\.0\.0\.1:\d+\/[a-f0-9]{32}\.pac$/.test(options.pacUrl)) throw Error('PAC 地址无效');
+    const previous = await read(); const ours = { ProxyEnable: options.pacUrl ? 0 : 1, ProxyServer: `127.0.0.1:${port}`, ProxyOverride: bypass, AutoConfigURL: options.pacUrl || null };
     let coreStarted;
     if (Number.isInteger(corePid) && corePid > 0) coreStarted = await ps(`(Get-Process -Id ${corePid} -ErrorAction Stop).StartTime.ToFileTimeUtc().ToString()`);
     fs.writeFileSync(this.file, JSON.stringify({ previous, ours, ownerPid: process.pid, corePid, coreStarted }), { mode: 0o600 });
@@ -56,8 +59,17 @@ class WindowsProxy {
     if (expectedOwner !== undefined && ownerPid !== expectedOwner) return;
     const current = await read();
     // Another app or the user may have taken ownership; never overwrite them.
-    if (current.ProxyServer === ours.ProxyServer && current.ProxyEnable === ours.ProxyEnable) await write(previous);
+    if (matches(current, ours)) await write(previous);
     fs.unlinkSync(this.file); this.enabled = false;
+  }
+  async reapply() {
+    if (!this.enabled || !fs.existsSync(this.file)) return false;
+    const journal = JSON.parse(fs.readFileSync(this.file, 'utf8'));
+    if (journal.ownerPid !== process.pid) return false;
+    const current = await read();
+    // A disabled proxy can be restored; an active external proxy keeps ownership.
+    if (!matches(current, journal.ours) && (current.ProxyEnable === 1 || current.AutoConfigURL)) return false;
+    await write(journal.ours); return true;
   }
 }
 module.exports = { WindowsProxy, ps, powershellError };

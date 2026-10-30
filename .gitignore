@@ -7,3 +7,7 @@ artifacts/
 .env*
 playwright-report/
 test-results/
+
+service/**/bin/
+service/**/obj/
+resources/service/

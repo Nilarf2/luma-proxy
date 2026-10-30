@@ -8,3 +8,5 @@ The distribution bundles Mihomo v1.19.33 (GPL-3.0):
 - Unmodified official binary, verified against the pinned SHA-256 in scripts/fetch-core.mjs.
 
 Electron (MIT) includes Chromium, Node.js, and other open source components; see LICENSE.electron.txt and LICENSES.chromium.html distributed alongside the application. React and React DOM (MIT), Lucide (ISC), and YAML (ISC) retain their license notices in the application dependencies.
+
+The optional native service uses the .NET 8 runtime (MIT) and YamlDotNet (MIT). Its project and package references are in service/Luma.Service.csproj. The published self-contained service includes those runtime components; their source and licenses are available at https://github.com/dotnet/runtime and https://github.com/aaubry/YamlDotNet.

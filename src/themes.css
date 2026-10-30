@@ -1,2 +1,2 @@
-/* Themes are semantic tokens; additional palettes need no component changes. */
-:root,[data-theme="porcelain"]{--canvas:#fafaf9;--surface:#fff;--sidebar:#f3f4f1;--text:#303a34;--muted:#7e8881;--faint:#9ba39c;--line:#ebede8;--accent:#527756}
+:root,[data-theme="light"]{color-scheme:light;--canvas:#fff;--surface:#fff;--sidebar:#f7f8fa;--text:#202124;--muted:#72757d;--line:#e9eaed;--hover:#f5f6f8;--selected:#edf2fb;--accent:#2563eb;--danger:#c03939;--code:#f7f8fa}
+[data-theme="dark"]{color-scheme:dark;--canvas:#17181a;--surface:#17181a;--sidebar:#202124;--text:#e9eaed;--muted:#9b9fa8;--line:#303237;--hover:#26282d;--selected:#272f41;--danger:#f08c8c;--code:#202226}

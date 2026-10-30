@@ -1,38 +1,61 @@
 const YAML = require('yaml');
 const crypto = require('node:crypto');
+const { normalizeSettings } = require('./settings.cjs');
+const { uriProfile } = require('./uri.cjs');
 const MAX_PROFILE = 8 * 1024 * 1024;
 function parseProfile(text) {
   if (typeof text !== 'string' || Buffer.byteLength(text) > MAX_PROFILE) throw Error('配置文件不能超过 8 MB');
   let doc;
-  try { doc = YAML.parse(text, { maxAliasCount: 50, uniqueKeys: true }); } catch { throw Error('无法解析配置，请导入有效的 Clash / Mihomo YAML'); }
-  if (!doc || typeof doc !== 'object' || Array.isArray(doc) || (!Array.isArray(doc.proxies) && !doc['proxy-providers'])) throw Error('需要 Clash / Mihomo YAML 配置，暂不支持 Base64 或单个节点链接');
+  try { doc = YAML.parse(text, { maxAliasCount: 50, uniqueKeys: true }); } catch { try { doc = uriProfile(text); } catch { throw Error('无法解析配置，请导入有效的 YAML 或节点链接'); } }
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc) || (!Array.isArray(doc.proxies) && !doc['proxy-providers'])) { try { doc = uriProfile(text); } catch { throw Error('需要 Clash / Mihomo YAML、Base64 订阅或节点链接'); } }
   if (!(doc.proxies?.length || Object.keys(doc['proxy-providers'] || {}).length)) throw Error('配置中没有代理节点');
   return doc;
 }
-function runtimeConfig(text, port, controller, secret, mode = 'rule') {
-  const c = parseProfile(text);
+function parseOverride(text = '') {
+  if (!text.trim()) return {};
+  if (Buffer.byteLength(text) > 1024 * 1024) throw Error('覆写配置不能超过 1 MB');
+  let doc; try { doc = YAML.parse(text, { maxAliasCount: 50, uniqueKeys: true }); } catch { throw Error('覆写 YAML 格式无效'); }
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) throw Error('覆写需要 YAML 对象');
+  return doc;
+}
+function mergeConfig(base, patch) {
+  for (const [key, value] of Object.entries(patch)) {
+    if (['__proto__', 'constructor', 'prototype'].includes(key)) throw Error('覆写字段无效');
+    if (key.startsWith('prepend-') || key.startsWith('append-')) {
+      const target = key.slice(key.indexOf('-') + 1); if (!Array.isArray(value) || !['rules', 'proxies', 'proxy-groups'].includes(target)) throw Error('覆写合并字段无效');
+      base[target] = key.startsWith('prepend-') ? [...value, ...(base[target] || [])] : [...(base[target] || []), ...value];
+    } else if (value && typeof value === 'object' && !Array.isArray(value)) base[key] = mergeConfig(base[key] && typeof base[key] === 'object' && !Array.isArray(base[key]) ? base[key] : {}, value);
+    else base[key] = value;
+  }
+  return base;
+}
+function runtimeConfig(text, port, controller, secret, mode = 'rule', settings = {}, profileOverride = '') {
+  const c = mergeConfig(mergeConfig(parseProfile(text), parseOverride(settings.globalOverride)), parseOverride(profileOverride));
+  const options = normalizeSettings(settings).core;
   for (const key of ['external-ui', 'external-ui-url', 'external-ui-name', 'external-controller-unix', 'external-controller-tls', 'external-controller-pipe', 'listeners', 'tunnels', 'authentication']) delete c[key];
-  // Subscription content never controls local listeners, admin APIs or TUN.
-  Object.assign(c, { 'mixed-port': port, port: 0, 'socks-port': 0, 'redir-port': 0, 'tproxy-port': 0, 'allow-lan': false, 'bind-address': '127.0.0.1', 'external-controller': `127.0.0.1:${controller}`, secret, mode, ipv6: false, 'log-level': 'warning', tun: { enable: false }, profile: { 'store-selected': true, 'store-fake-ip': false } });
-  if (c.dns?.enable) c.dns.listen = '127.0.0.1:0';
+  // Only the user's validated settings control listeners, admin APIs and TUN.
+  Object.assign(c, { 'mixed-port': port, port: options.httpPort, 'socks-port': options.socksPort, 'redir-port': 0, 'tproxy-port': 0, 'allow-lan': options.allowLan, 'bind-address': options.allowLan ? '*' : '127.0.0.1', 'external-controller': `127.0.0.1:${controller}`, secret, mode, ipv6: options.ipv6, 'log-level': options.logLevel, tun: { enable: options.tun.enabled, device: 'Luma', stack: options.tun.stack, 'auto-route': options.tun.autoRoute, 'auto-detect-interface': true, 'strict-route': options.tun.strictRoute, mtu: options.tun.mtu, 'dns-hijack': ['any:53', 'tcp://any:53'], 'route-exclude-address': options.tun.routeExcludeAddress }, profile: { 'store-selected': true, 'store-fake-ip': true } });
+  c.dns = { ...(c.dns || {}), enable: options.dns.enabled, listen: '127.0.0.1:0', ipv6: options.ipv6, 'enhanced-mode': options.dns.enhancedMode, 'fake-ip-range': '198.18.0.1/16', 'fake-ip-filter': options.dns.fakeIpFilter, nameserver: options.dns.nameserver, fallback: options.dns.fallback };
   for (const section of ['proxy-providers', 'rule-providers']) {
     for (const [name, provider] of Object.entries(c[section] || {})) {
       if (provider && typeof provider === 'object') {
         provider.path = `./providers/${crypto.createHash('sha256').update(section + name).digest('hex')}.yaml`;
-        if (provider.type === 'file') throw Error('暂不支持依赖外部文件的 provider，请使用 HTTP 或内嵌节点配置');
+        if (provider.type === 'file' && !settings.localProviders?.[`${section}:${name}`]) throw Error('请先在配置编辑中导入此本地 Provider 文件');
       }
     }
   }
   return YAML.stringify(c);
 }
-async function downloadProfile(url) {
-  let u;
-  try { u = new URL(url); } catch { throw Error('请输入有效的订阅地址'); }
-  if (!['https:', 'http:'].includes(u.protocol) || u.username || u.password) throw Error('订阅地址必须为 HTTP / HTTPS');
-  const res = await fetch(u, { signal: AbortSignal.timeout(25000), headers: { 'User-Agent': 'Luma/0.1.0 Mihomo', Accept: 'text/yaml,text/plain,*/*' } });
-  if (!res.ok) throw Error(`订阅下载失败（HTTP ${res.status}）`);
-  let size = 0; const chunks = [];
-  for await (const chunk of res.body) { size += chunk.length; if (size > MAX_PROFILE) throw Error('订阅文件不能超过 8 MB'); chunks.push(chunk); }
-  const text = Buffer.concat(chunks).toString('utf8'); parseProfile(text); return text;
+function subscriptionUsage(header) {
+  const usage = {};
+  for (const part of String(header || '').split(';')) { const [key, value] = part.trim().split('='); if (['upload', 'download', 'total', 'expire'].includes(key) && /^\d+$/.test(value)) usage[key] = Number(value); }
+  return Object.keys(usage).length ? usage : null;
 }
-module.exports = { parseProfile, runtimeConfig, downloadProfile };
+async function downloadSubscription(url, options, proxyPort) {
+  const { requestSubscription } = require('./download.cjs');
+  const res = await requestSubscription(url, options, proxyPort);
+  const text = res.body.toString('utf8'); parseProfile(text);
+  return { text, usage: subscriptionUsage(res.headers['subscription-userinfo']), updateInterval: Math.max(0, Math.min(10080, Math.floor(Number(res.headers['profile-update-interval']) * 60 || 0))) };
+}
+async function downloadProfile(url) { return (await downloadSubscription(url)).text; }
+module.exports = { parseProfile, runtimeConfig, downloadProfile, downloadSubscription, subscriptionUsage, parseOverride, mergeConfig };

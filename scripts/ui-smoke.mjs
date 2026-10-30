@@ -2,19 +2,260 @@ import { chromium } from '@playwright/test';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import assert from 'node:assert/strict';
-const server=spawn(process.execPath,['node_modules/vite/bin/vite.js','--host','127.0.0.1','--port','5179'],{stdio:'ignore'});
+
+const server = spawn(process.execPath, ['node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', '5179'], { stdio: 'ignore' });
 let browser;
-try{
- for(let i=0;i<60;i++){try{await fetch('http://127.0.0.1:5179');break;}catch{await new Promise(r=>setTimeout(r,200));}}
- browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH||'/usr/bin/chromium',headless:true,args:['--no-sandbox']});
- const page=await browser.newPage({viewport:{width:1180,height:820}});const errors=[];page.on('pageerror',e=>errors.push(e.message));
- await page.goto('http://127.0.0.1:5179');await page.getByRole('heading',{name:'连接，从容一点。'}).waitFor();await page.getByRole('button',{name:'开启连接'}).click();await page.getByRole('dialog').waitFor();await page.getByRole('button',{name:'关闭导入'}).click();
- await page.addInitScript(()=>{let state={profiles:[],activeId:null,running:false,systemProxy:false,mode:'rule',closeToTray:true,launchAtLogin:false,startupCheck:true,version:'0.1.2',health:{checking:false,checkedAt:'2026-10-30T08:15:00Z',status:'ok',items:[{id:'kernel',label:'本地内核',status:'ok',detail:'内核已就绪'},{id:'recovery',label:'代理恢复',status:'ok',detail:'没有待恢复的代理设置'},{id:'systemProxy',label:'系统代理',status:'ok',detail:'当前代理设置正常'},{id:'launchAtLogin',label:'开机启动',status:'skipped',detail:'当前未启用开机启动'}]}};const handlers=[];let node='Tokyo 01';const publish=()=>handlers.forEach(f=>f({...state}));window.luma={onState:fn=>{handlers.push(fn);return()=>{};},invoke:async(c,p)=>{if(c==='state')return state;if(c==='health:check'){state.health={...state.health,checking:true};publish();await new Promise(r=>setTimeout(r,300));const warning=!window.__checkedHealth;window.__checkedHealth=true;state.health={checking:false,checkedAt:new Date().toISOString(),status:warning?'warning':'ok',items:state.health.items.map(item=>item.id==='systemProxy'?{...item,status:warning?'warning':'ok',detail:warning?'系统代理由其他应用设置':'当前代理设置正常'}:item)};publish();return state.health;}if(c==='profile:import'){state.profiles.push({id:'test',name:p.name||'Test',remote:true,updatedAt:new Date().toISOString()});state.activeId='test';publish();}if(c==='toggle'){state.running=!state.running;state.systemProxy=state.running;publish();}if(c==='mode'){state.mode=p;publish();}if(c==='settings'){Object.assign(state,p);publish();}if(c==='systemProxy'){state.systemProxy=p;publish();}if(c==='stats')return{upload:1024,download:4096,connections:[{id:'c1',host:'example.com',process:'browser.exe',rule:'MATCH',chains:[node],upload:123,download:321}],groups:[{name:'Proxy',type:'Selector',now:node,nodes:[{name:'Tokyo 01',type:'Trojan',delay:31},{name:'Singapore 02',type:'SS',delay:80}]}]};if(c==='node:select')node=p.name;if(c==='node:delay')return{delay:42};if(c==='profile:update')throw Error('订阅下载失败（HTTP 503）');if(c==='logs')return['test warning'];}};});
- await page.reload();await page.getByRole('button',{name:'开启连接'}).click();await page.getByPlaceholder('例如：日常连接').fill('日常连接');await page.getByPlaceholder('https://example.com/subscribe').fill('https://example.com/test');await page.getByRole('dialog').getByRole('button',{name:'添加订阅',exact:true}).click();await page.getByRole('dialog').waitFor({state:'hidden'});await page.getByRole('button',{name:'开启连接'}).click();await page.getByText('安全连接已开启').waitFor();await page.getByText('Tokyo 01',{exact:true}).waitFor();
- await page.getByRole('button',{name:'代理节点',exact:true}).click();await page.getByRole('button',{name:/Singapore 02/}).click();await page.locator('.node-card.selected').filter({hasText:'Singapore 02'}).waitFor();await page.getByRole('button',{name:'测试延迟'}).click();await page.getByText('42 ms').first().waitFor();
- await page.getByRole('button',{name:'活动连接',exact:false}).click();await page.getByText('example.com',{exact:true}).waitFor();await page.getByRole('button',{name:'偏好设置',exact:true}).click();await page.getByRole('switch',{name:'开机启动'}).click();assert.equal(await page.getByRole('switch',{name:'开机启动'}).getAttribute('aria-checked'),'true');
- await page.getByRole('button',{name:'关闭提示'}).click();const diagnostics=page.getByRole('region',{name:'启动检查详情'});await diagnostics.getByText('内核已就绪').waitFor();await diagnostics.getByText('上次检查 ·',{exact:false}).waitFor();assert.equal(await page.getByRole('switch',{name:'启动时自动检测'}).getAttribute('aria-checked'),'true');await page.getByRole('switch',{name:'启动时自动检测'}).click();assert.equal(await page.getByRole('switch',{name:'启动时自动检测'}).getAttribute('aria-checked'),'false');await diagnostics.getByRole('button',{name:'重新检测'}).click();await diagnostics.getByRole('button',{name:'检查中'}).waitFor();assert.equal(await diagnostics.getByRole('button',{name:'检查中'}).isDisabled(),true);await diagnostics.getByText('系统代理由其他应用设置').waitFor();await page.getByRole('button',{name:'概览',exact:true}).click();await page.getByLabel('启动检查状态').getByText('有项目需要留意').waitFor();await page.getByRole('button',{name:'查看详情'}).click();await diagnostics.getByRole('button',{name:'重新检测'}).click();await diagnostics.getByText('启动检查正常',{exact:true}).waitFor();assert.equal(await page.getByRole('status').count(),0);await page.setViewportSize({width:940,height:850});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'No settings overflow at 940');
- await page.getByRole('button',{name:'订阅管理',exact:true}).click();await page.getByRole('button',{name:'更新订阅',exact:true}).click();await page.getByRole('status').filter({hasText:'HTTP 503'}).waitFor();
- await page.getByRole('button',{name:'概览',exact:true}).click();for(const width of [940,1180,1440]){await page.setViewportSize({width,height:850});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,`No overflow at ${width}`);}
- await fs.mkdir('artifacts',{recursive:true});await page.screenshot({path:'artifacts/overview.png'});assert.deepEqual(errors,[]);console.log('UI smoke passed: empty state, import, connect, node selection, latency, connections, preferences, health diagnostics and reruns, errors, 3 window widths');
-}finally{await browser?.close();server.kill();}
+try {
+  for (let i = 0; i < 60; i++) { try { await fetch('http://127.0.0.1:5179'); break; } catch { await new Promise(resolve => setTimeout(resolve, 200)); } }
+  browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || '/usr/bin/chromium', headless: true, args: ['--no-sandbox'] });
+  const page = await browser.newPage({ viewport: { width: 1180, height: 820 } });
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.goto('http://127.0.0.1:5179');
+  await page.getByRole('button', { name: '开启连接', exact: true }).click();
+  await page.getByRole('dialog', { name: '添加订阅' }).waitFor();
+  await page.getByRole('button', { name: '关闭导入' }).click();
+  assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('main')).backgroundColor), 'rgba(0, 0, 0, 0)');
+  assert.equal(await page.evaluate(() => getComputedStyle(document.body).backgroundColor), 'rgb(255, 255, 255)');
+  assert.equal(await page.getByText('A quieter connection.').count(), 0);
+
+  await page.addInitScript(() => {
+    const stored = JSON.parse(localStorage.getItem('luma-test-state') || 'null');
+    let state = stored || { profiles: [], activeId: null, running: false, systemProxy: false, mode: 'rule', closeToTray: true, launchAtLogin: false, startupCheck: true, appearance: { mode: 'light', accent: '#2563eb', sidebar: null }, core: { mixedPort: 0, httpPort: 0, socksPort: 0, allowLan: false, ipv6: false, logLevel: 'info', bypass: '', tun: { enabled: false, stack: 'mixed', autoRoute: true, strictRoute: false, mtu: 1500, routeExcludeAddress: [] }, dns: { enabled: true, enhancedMode: 'fake-ip', nameserver: [], fallback: [], fakeIpFilter: [] } }, privilege: { admin: false, platform: 'win32' }, version: 'test', health: { checking: false, checkedAt: '2026-10-30T08:15:00Z', status: 'ok', items: [{ id: 'kernel', label: '本地内核', status: 'ok', detail: '内核已就绪' }, { id: 'systemProxy', label: '系统代理', status: 'ok', detail: '当前代理设置正常' }] } };
+    const callbacks = [], calls = [];
+    let node = 'Tokyo 01', connections = [{ id: 'c1', host: 'example.com', process: 'browser.exe', rule: 'MATCH', chains: [node], upload: 123, download: 321 }], logs = ['[info] test connection'];
+    window.__calls = calls;
+    const publish = () => { localStorage.setItem('luma-test-state', JSON.stringify(state)); callbacks.forEach(callback => callback(structuredClone(state))); };
+    window.luma = { onState: callback => { callbacks.push(callback); return () => {}; }, invoke: async (channel, payload) => {
+      calls.push({ channel, payload });
+      if (channel === 'state') return structuredClone(state);
+      if (channel === 'profile:import') { state.profiles.push({ id: state.profiles.length ? 'second' : 'test', name: payload.name || 'Test', remote: true, updatedAt: new Date().toISOString() }); state.activeId = 'test'; publish(); }
+      if (channel === 'toggle') { state.running = !state.running; state.systemProxy = state.running; state.tunRunning = state.running && state.core.tun.enabled; publish(); }
+      if (channel === 'mode') { state.mode = payload; publish(); }
+      if (channel === 'settings') { Object.assign(state, payload); publish(); }
+      if (channel === 'systemProxy') { state.systemProxy = payload; publish(); }
+      if (channel === 'tun') { state.core.tun.enabled = payload; state.tunRunning = payload && state.running; publish(); }
+      if (channel === 'stats') return { upload: 1024, download: 4096, connections, groups: [{ name: 'Proxy', type: 'Selector', now: node, nodes: [{ name: 'Tokyo 01', type: 'Trojan', delay: 31 }, { name: 'Singapore 02', type: 'SS', delay: 80 }] }] };
+      if (channel === 'node:select') node = payload.name;
+      if (channel === 'node:delay') return { delay: 42 };
+      if (channel === 'connections:close') connections = connections.filter(c => c.id !== payload);
+      if (channel === 'connections:clear') connections = [];
+      if (channel === 'profile:update') throw Error('订阅下载失败（HTTP 503）');
+      if (channel === 'profile:structured:get') return { rules: ['DOMAIN,example.com,Proxy', 'MATCH,DIRECT'], proxies: [{ name: 'Node', type: 'ss', server: 'example.net', port: 443, cipher: 'aes-128-gcm', password: 'test' }], groups: [{ name: 'Proxy', type: 'select', proxies: ['Node', 'DIRECT'] }] };
+      if (channel === 'profile:get') return { text: 'proxies: []\nrules: []\n', override: '', script: '', sourceIds: [] };
+      if (channel === 'profile:save') { Object.assign(state.profiles.find(p => p.id === payload.id), payload); publish(); }
+      if (channel === 'rules') return { rules: [{ type: 'DOMAIN', payload: 'example.com', proxy: 'Proxy' }], providers: { rules: { basic: { updatedAt: '2026-10-30T08:00:00Z' } }, proxies: {} } };
+      if (channel === 'os:uwp-list') return [{ name: 'Test UWP', sid: 'S-1-test', enabled: window.__uwpEnabled || false }];
+      if (channel === 'os:uwp-set') window.__uwpEnabled = payload.enabled;
+      if (channel === 'service:status') return state.service || { installed: false, running: false };
+      if (channel === 'service:install') { state.service = { installed: true, running: true }; publish(); }
+      if (channel === 'service:uninstall') { state.service = { installed: false, running: false }; publish(); }
+      if (channel.startsWith('backup:')) return { saved: true };
+      if (channel === 'core:check-update') return { version: 'next-core', current: 'core', available: true };
+      if (channel === 'core:update') { await new Promise(resolve => { window.__cancelDownload = resolve; setTimeout(resolve, 300); }); return { version: 'next-core' }; }
+      if (channel === 'update:cancel') window.__cancelDownload?.();
+      if (channel === 'app:check-update') return { version: 'next-app', current: 'test', available: true };
+      if (channel === 'app:download-update') return { version: 'next-app', path: 'verified-installer.exe' };
+      if (channel === 'logs') return logs;
+      if (channel === 'logs:clear') logs = [];
+      if (channel === 'health:check') { state.health = { ...state.health, checking: true }; publish(); await new Promise(resolve => setTimeout(resolve, 300)); const warning = !window.__checkedHealth; window.__checkedHealth = true; state.health = { checking: false, checkedAt: new Date().toISOString(), status: warning ? 'warning' : 'ok', items: state.health.items.map(item => item.id === 'systemProxy' ? { ...item, status: warning ? 'warning' : 'ok', detail: warning ? '系统代理由其他应用设置' : '当前代理设置正常' } : item) }; publish(); return state.health; }
+    } };
+  });
+  await page.reload();
+  const nav = name => page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name, exact: true });
+  const called = async (channel, predicate = () => true) => { for (let attempt = 0; attempt < 100; attempt++) { const calls = await page.evaluate(() => window.__calls); if (calls.some(call => call.channel === channel && predicate(call.payload))) return; await new Promise(resolve => setTimeout(resolve, 100)); } assert.fail(`Expected IPC call: ${channel}`); };
+
+  await page.getByRole('button', { name: '开启连接', exact: true }).click();
+  const importer = page.getByRole('dialog', { name: '添加订阅' });
+  await importer.getByLabel('订阅名称', { exact: true }).fill('日常连接');
+  await importer.getByLabel('订阅地址', { exact: true }).fill('https://example.com/test');
+  await importer.getByRole('button', { name: '添加订阅', exact: true }).click();
+  await importer.waitFor({ state: 'hidden' });
+  await page.getByRole('button', { name: '开启连接', exact: true }).click();
+  await page.getByRole('heading', { name: '已连接', exact: true }).waitFor();
+  await page.getByRole('switch', { name: 'TUN 模式', exact: true }).click();
+  await called('tun', payload => payload === true);
+  await page.getByRole('button', { name: '以管理员身份重启' }).click();
+  await called('privilege:elevate');
+
+  await nav('代理节点').click();
+  await page.getByRole('button', { name: /Singapore 02/ }).click();
+  await page.locator('.node-row.selected').filter({ hasText: 'Singapore 02' }).waitFor();
+  await page.getByRole('button', { name: '测试延迟' }).click();
+  await page.getByText('42 ms').first().waitFor();
+  await nav('活动连接').click();
+  await page.getByRole('button', { name: 'example.com', exact: true }).click();
+  await page.locator('.connection-detail').waitFor();
+  await page.getByRole('button', { name: '关闭连接 example.com' }).click();
+  await page.getByText('暂无连接', { exact: true }).waitFor();
+
+  await nav('订阅管理').click();
+  await page.getByRole('button', { name: '添加订阅', exact: true }).click();
+  await importer.getByLabel('订阅名称', { exact: true }).fill('组合来源');
+  await importer.getByLabel('订阅地址', { exact: true }).fill('https://example.com/source');
+  await importer.getByRole('button', { name: '添加订阅', exact: true }).click();
+  await importer.waitFor({ state: 'hidden' });
+  await page.getByRole('article').filter({ hasText: '日常连接' }).getByRole('button', { name: '编辑', exact: true }).click();
+  const editor = page.getByRole('dialog', { name: '编辑订阅' });
+  await editor.getByLabel('订阅 YAML', { exact: true }).fill('proxies: []\nrules: [MATCH,DIRECT]\n');
+  await editor.getByLabel('订阅名称', { exact: true }).fill('修改后的订阅');
+  await editor.getByLabel('自动更新间隔', { exact: true }).fill('60');
+  await editor.getByRole('button', { name: '覆写', exact: true }).click();
+  await editor.getByLabel('订阅 YAML 覆写', { exact: true }).fill('ipv6: true');
+  await editor.getByRole('button', { name: '脚本', exact: true }).click();
+  await editor.getByLabel('订阅覆写脚本').fill('function main(config) { config.ipv6 = true; return config; }');
+  await editor.getByRole('button', { name: '组合', exact: true }).click();
+  await editor.getByRole('checkbox', { name: '组合来源' }).check();
+  await editor.getByText('请求设置', { exact: true }).click();
+  await editor.getByLabel('订阅请求超时').fill('30000');
+  await editor.getByLabel('订阅 User-Agent').fill('Luma Test');
+  await editor.getByLabel('订阅请求头').fill('{"X-Test":"yes"}');
+  await editor.getByRole('switch', { name: '通过当前代理下载' }).click();
+  await editor.getByRole('button', { name: '保存订阅' }).click();
+  await editor.waitFor({ state: 'hidden' });
+  await page.getByRole('heading', { name: /修改后的订阅/ }).waitFor();
+  await called('profile:save', payload => payload.text.includes('MATCH,DIRECT'));
+  await called('profile:save', payload => payload.download.timeout === 30000 && payload.download.viaProxy && payload.download.headers['X-Test'] === 'yes' && payload.updateInterval === 60 && payload.override === 'ipv6: true' && payload.script.includes('function main') && payload.sourceIds.includes('second'));
+  await page.getByRole('article').filter({ hasText: '修改后的订阅' }).getByRole('button', { name: '规则与节点', exact: true }).click();
+  const structured = page.getByRole('dialog', { name: '规则与节点' });
+  await structured.getByLabel('规则 1', { exact: true }).fill('DOMAIN,updated.example,Proxy');
+  await structured.getByRole('button', { name: '下移第 1 项', exact: true }).click();
+  assert.equal(await structured.getByLabel('规则 2', { exact: true }).inputValue(), 'DOMAIN,updated.example,Proxy');
+  await structured.getByRole('button', { name: '添加规则', exact: true }).click();
+  await structured.getByLabel('规则 3', { exact: true }).fill('DOMAIN,new.example,DIRECT');
+  await structured.getByRole('button', { name: '节点', exact: true }).click();
+  await structured.getByLabel('服务器 1', { exact: true }).fill('updated.example.net');
+  await structured.getByRole('button', { name: '保存规则与节点', exact: true }).click();
+  await structured.waitFor({ state: 'hidden' });
+  await called('profile:structured:apply', payload => payload.rules[1] === 'DOMAIN,updated.example,Proxy' && payload.proxies[0].server === 'updated.example.net');
+  await page.getByRole('button', { name: '导出订阅' }).first().click();
+  await called('profile:export');
+  await page.getByRole('button', { name: '更新订阅', exact: true }).first().click();
+  await page.getByRole('status').filter({ hasText: 'HTTP 503' }).waitFor();
+  await page.getByRole('button', { name: '关闭提示' }).click();
+
+  await nav('规则').click();
+  await page.getByRole('cell', { name: 'example.com', exact: true }).waitFor();
+  await page.getByRole('button', { name: '更新', exact: true }).click();
+  await called('providers:update', payload => payload.name === 'basic' && payload.type === 'rules');
+  await nav('日志').click();
+  await page.getByText('[info] test connection', { exact: true }).waitFor();
+  await page.getByRole('button', { name: '导出日志', exact: true }).click();
+  await called('logs:export');
+  await page.getByRole('button', { name: '清空日志', exact: true }).click();
+  await page.getByText('暂无日志', { exact: true }).waitFor();
+
+  await nav('设置').click();
+  await page.getByLabel('外观模式', { exact: true }).selectOption('dark');
+  await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
+  await called('settings', payload => payload.appearance?.mode === 'dark');
+  await page.reload();
+  await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
+  await nav('设置').click();
+  await page.getByLabel('外观模式', { exact: true }).selectOption('light');
+  await page.getByRole('button', { name: '蓝色', exact: true }).click();
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.sidebar')).backgroundColor === 'rgb(237, 243, 252)');
+  await page.getByLabel('强调色', { exact: true }).fill('#b23456');
+  await called('settings', payload => payload.appearance?.accent === '#b23456');
+  await page.getByRole('button', { name: '纯白', exact: true }).click();
+  await page.waitForFunction(() => getComputedStyle(document.body).backgroundColor === 'rgb(255, 255, 255)');
+  await page.getByLabel('外观模式', { exact: true }).selectOption('system');
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
+  await page.emulateMedia({ colorScheme: 'light' });
+  await page.waitForFunction(() => document.documentElement.dataset.theme === 'light');
+
+  await page.getByText('侧栏项目', { exact: true }).click();
+  await page.getByRole('switch', { name: '显示日志', exact: true }).click();
+  await called('settings', payload => payload.appearance?.hiddenNav?.includes('logs'));
+  assert.equal(await nav('日志').count(), 0);
+  await page.getByRole('switch', { name: '显示日志', exact: true }).click();
+  await page.getByRole('button', { name: '上移代理节点', exact: true }).click();
+  await called('settings', payload => payload.appearance?.navOrder?.[0] === 'proxies');
+  await page.getByText('自定义 CSS', { exact: true }).click();
+  await page.getByRole('textbox', { name: '自定义 CSS', exact: true }).fill('.brand { letter-spacing: 2px; }');
+  await page.getByRole('button', { name: '应用 CSS', exact: true }).click();
+  await called('settings', payload => payload.appearance?.customCss?.includes('letter-spacing'));
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.brand')).letterSpacing === '2px');
+  await page.getByRole('button', { name: '重置 CSS', exact: true }).click();
+  await page.getByRole('switch', { name: '开机启动', exact: true }).click();
+  assert.equal(await page.getByRole('switch', { name: '开机启动', exact: true }).getAttribute('aria-checked'), 'true');
+  await page.getByLabel('延迟测试超时', { exact: true }).fill('5000');
+  await page.getByRole('button', { name: '保存测速设置', exact: true }).click();
+  await called('settings', payload => payload.latency?.timeout === 5000);
+  await page.getByLabel('混合端口', { exact: true }).fill('7890');
+  await page.getByLabel('系统代理类型', { exact: true }).selectOption('pac');
+  await page.getByLabel('PAC 脚本', { exact: true }).fill('function FindProxyForURL(url, host) { return "PROXY __PROXY__"; }');
+  await page.getByLabel('DNS 服务器', { exact: true }).fill('https://dns.example/dns-query\n1.1.1.1');
+  await page.getByRole('button', { name: '保存网络设置' }).click();
+  await called('settings', payload => payload.core?.mixedPort === 7890 && payload.core?.dns.nameserver.length === 2 && payload.core?.proxyMode === 'pac');
+  await page.getByLabel('全局 YAML 覆写').fill('ipv6: true');
+  await page.getByRole('button', { name: '保存覆写' }).click();
+  await called('settings', payload => payload.globalOverride === 'ipv6: true');
+  await page.getByRole('button', { name: '清除 DNS 缓存', exact: true }).click();
+  await called('cache:flush', payload => payload === 'dns');
+  await page.getByRole('switch', { name: '启动时自动检测', exact: true }).click();
+  assert.equal(await page.getByRole('switch', { name: '启动时自动检测', exact: true }).getAttribute('aria-checked'), 'false');
+  await page.getByRole('button', { name: '重新检测', exact: true }).click();
+  await page.getByRole('button', { name: '检查中', exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: '检查中', exact: true }).isDisabled(), true);
+  await page.getByRole('region', { name: '启动检查详情' }).getByText('系统代理由其他应用设置').waitFor();
+  await page.getByRole('button', { name: '重新检测', exact: true }).click();
+  await page.getByRole('region', { name: '启动检查详情' }).getByText('启动检查正常', { exact: true }).waitFor();
+  await page.getByLabel('连接 / 断开快捷键', { exact: true }).fill('Ctrl+Shift+K');
+  await page.getByRole('button', { name: '保存快捷键', exact: true }).click();
+  await called('settings', payload => payload.hotkeys?.toggle === 'Ctrl+Shift+K');
+  await page.getByLabel('自动备份间隔', { exact: true }).fill('24');
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await called('settings', payload => payload.backupIntervalHours === 24);
+  await page.getByRole('button', { name: '打开备份目录', exact: true }).click();
+  await called('backup:open-folder');
+  await page.getByRole('button', { name: '导出备份', exact: true }).click();
+  await called('backup:export');
+  await page.getByRole('button', { name: '导入备份', exact: true }).click();
+  await called('backup:import');
+  await page.getByText('WebDAV', { exact: true }).click();
+  await page.getByLabel('WebDAV 地址', { exact: true }).fill('https://dav.example/luma.json');
+  await page.getByLabel('WebDAV 用户名', { exact: true }).fill('test-user');
+  await page.getByLabel('WebDAV 密码', { exact: true }).fill('test-password');
+  await page.getByRole('button', { name: '上传备份', exact: true }).click();
+  await called('backup:webdav:upload', payload => payload.url === 'https://dav.example/luma.json');
+  await page.getByRole('button', { name: '恢复备份', exact: true }).click();
+  await called('backup:webdav:download');
+  await page.getByRole('button', { name: '检查内核更新', exact: true }).click();
+  await page.getByText(/next-core · 可更新/).waitFor();
+  assert.equal(await page.getByRole('button', { name: '更新内核', exact: true }).isDisabled(), true);
+  await page.getByRole('button', { name: '检查应用更新', exact: true }).click();
+  await page.getByRole('button', { name: '下载更新', exact: true }).click();
+  await page.getByRole('button', { name: '安装更新', exact: true }).waitFor();
+  await page.getByRole('button', { name: '安装服务', exact: true }).click();
+  await page.getByRole('button', { name: '卸载服务', exact: true }).click();
+  await called('service:uninstall');
+  await page.getByRole('button', { name: '管理回环豁免', exact: true }).click();
+  const uwp = page.getByRole('dialog', { name: 'UWP 回环豁免' });
+  await uwp.getByRole('switch', { name: 'Test UWP', exact: true }).click();
+  await called('os:uwp-set', payload => payload.enabled === true);
+  assert.equal(await uwp.getByRole('switch', { name: 'Test UWP', exact: true }).getAttribute('aria-checked'), 'true');
+  await uwp.getByRole('button', { name: '关闭UWP 回环豁免', exact: true }).click();
+  await nav('概览').click();
+  await page.getByRole('button', { name: '断开连接', exact: true }).click();
+  await nav('设置').click();
+  await page.getByRole('button', { name: '更新内核', exact: true }).click();
+  await page.getByRole('button', { name: '取消下载', exact: true }).click();
+  await called('update:cancel');
+  await called('core:update', payload => payload.channel === 'stable');
+  await page.getByRole('button', { name: '导入内核', exact: true }).click();
+  await called('core:import');
+  await page.getByRole('button', { name: '恢复内置内核', exact: true }).click();
+  await called('core:reset');
+  await page.getByRole('button', { name: '安装更新', exact: true }).click();
+  await called('app:install-update');
+  for (const width of [940, 1180, 1440]) { await page.setViewportSize({ width, height: 850 }); assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `No settings overflow at ${width}`); await nav('概览').click(); assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `No overview overflow at ${width}`); await nav('设置').click(); }
+  await fs.mkdir('artifacts', { recursive: true });
+  await nav('概览').click();
+  if (await page.getByRole('button', { name: '关闭提示' }).count()) await page.getByRole('button', { name: '关闭提示' }).click();
+  for (const width of [940, 1180]) { await page.setViewportSize({ width, height: 850 }); await page.screenshot({ path: `artifacts/overview-${width}.png` }); }
+  await page.screenshot({ path: 'artifacts/overview.png' });
+  assert.deepEqual(errors, []);
+  console.log('UI smoke passed: white layout, profiles, connection/TUN, nodes, granular connections, rules, logs, theme persistence/system mode, core/DNS/override settings, diagnostics, error handling and window widths');
+} finally { await browser?.close(); server.kill(); }

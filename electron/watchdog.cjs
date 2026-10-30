@@ -43,6 +43,7 @@ async function startWatchdog(pid, dir, binary, isCancelled = () => false) {
 $ErrorActionPreference='Stop'
 $file=${decoded(path.join(dir, 'proxy-recovery.json'))}
 $exe=${decoded(binary)}
+$coreFile=${decoded(path.join(dir, 'core-recovery.json'))}
 $ready=${decoded(readyFile)}
 $log=$file+'.watchdog.log'
 $owner=Get-Process -Id ${Number(pid)} -ErrorAction Stop
@@ -56,12 +57,14 @@ try {
   } catch { }
   Start-Sleep -Milliseconds 500
  }
- if(Test-Path -LiteralPath $file) {
+ try { if(Test-Path -LiteralPath $file) {
   $j=Get-Content -LiteralPath $file -Raw | ConvertFrom-Json
   if($j.ownerPid -eq ${Number(pid)}) {
    $key='HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings'
    $current=Get-ItemProperty $key
-   if($current.ProxyServer -eq $j.ours.ProxyServer -and $current.ProxyEnable -eq $j.ours.ProxyEnable) {
+   $matches=$true
+   foreach($field in $j.ours.PSObject.Properties) { if($current.($field.Name) -ne $field.Value) { $matches=$false; break } }
+   if($matches) {
     foreach($p in $j.previous.PSObject.Properties) {
      if($null -eq $p.Value) { Remove-ItemProperty -Path $key -Name $p.Name -ErrorAction SilentlyContinue }
      else { $t='String'; if($p.Name -eq 'ProxyEnable'){$t='DWord'}; New-ItemProperty -Path $key -Name $p.Name -Value $p.Value -PropertyType $t -Force | Out-Null }
@@ -75,6 +78,15 @@ try {
     $core=Get-Process -Id $j.corePid -ErrorAction SilentlyContinue
     if($core -and $core.Path -eq $exe -and $core.StartTime.ToFileTimeUtc().ToString() -eq $j.coreStarted) { Stop-Process -Id $j.corePid -Force -ErrorAction SilentlyContinue }
    }
+  }
+ }
+ } catch { Add-Content -LiteralPath $log -Value ('Proxy recovery: '+($_ | Out-String)) }
+ if(Test-Path -LiteralPath $coreFile) {
+  $k=Get-Content -LiteralPath $coreFile -Raw | ConvertFrom-Json
+  if($k.ownerPid -eq ${Number(pid)}) {
+   $core=Get-Process -Id $k.corePid -ErrorAction SilentlyContinue
+   if($core -and $core.Path -eq $(if($k.binary){$k.binary}else{$exe}) -and $core.StartTime.ToFileTimeUtc().ToString() -eq $k.coreStarted) { Stop-Process -Id $k.corePid -Force -ErrorAction SilentlyContinue }
+   Remove-Item -LiteralPath $coreFile -Force -ErrorAction SilentlyContinue
   }
  }
 } catch { Add-Content -LiteralPath $log -Value ($_ | Out-String) }

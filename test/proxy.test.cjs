@@ -77,3 +77,20 @@ test('proxy inspection is read-only and distinguishes ownership without exposing
     assert.equal((await f.proxy.inspect()).ownership, 'stale');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('PAC ownership restores exact prior autoconfig and guard respects another app', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'luma-pac-proxy-'));
+  try {
+    const f = fixture(dir); const original = { ProxyEnable: 0, ProxyServer: null, ProxyOverride: '*.example', AutoConfigURL: 'https://previous.example/proxy.pac' };
+    f.set(original); const url = 'http://127.0.0.1:18555/' + 'a'.repeat(32) + '.pac';
+    await f.proxy.enable(12345, undefined, '<local>', { pacUrl: url });
+    assert.equal(f.get().AutoConfigURL, url); assert.equal(f.get().ProxyEnable, 0); assert.equal((await f.proxy.inspect()).ownership, 'ours');
+    f.set({ ...f.get(), AutoConfigURL: null }); assert.equal((await f.proxy.inspect()).ownership, 'disabled');
+    await f.proxy.reapply(); assert.equal(f.get().AutoConfigURL, url);
+    await f.proxy.restore(); assert.deepEqual(f.get(), original);
+    await f.proxy.enable(12345, undefined, '<local>', { pacUrl: url });
+    f.set({ ...f.get(), AutoConfigURL: 'https://other.example/a.pac' });
+    await f.proxy.reapply(); assert.equal(f.get().AutoConfigURL, 'https://other.example/a.pac');
+    await f.proxy.restore(); assert.equal(f.get().AutoConfigURL, 'https://other.example/a.pac');
+  } finally { fs.rmSync(dir, { force: true, recursive: true }); }
+});

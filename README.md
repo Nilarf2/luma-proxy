@@ -1,53 +1,51 @@
 # Luma
 
-**让连接归于简单。** A quiet, minimal Windows proxy client, powered by Mihomo.
-
-Porcelain white, generous spacing, restrained sage accents. Built for Windows 10 / 11 x64. Semantic theme tokens keep future palettes independent of components.
-
-## v0.1 preview
-
-- Import Clash / Mihomo YAML from subscription URL or local file; update, switch, and remove profiles.
-- Start/stop bundled Mihomo; switch rule/global/direct modes and Windows system proxy.
-- Select nodes within Selector groups; test latency with bounded concurrency.
-- Real connection totals, transfer speeds, active connections, and sanitized diagnostic logs.
-- Tray controls, single-instance, optional login startup, minimize to tray.
-- Automatic local startup checks for the bundled kernel, recovery protection, Windows system proxy, and login startup. Review results on the dashboard or in Settings, rerun manually, or disable automatic checks. Checks do not connect to nodes, measure latency, or update subscriptions.
-- Restore previous Windows proxy settings on disconnect/quit, with an independent watchdog and next-launch recovery. The watchdog can start without WMI; if recovery protection cannot start, the UI remains available and system proxy activation is refused with an explanation. Respect settings changed by another app.
-- Local-only profile storage under `%APPDATA%/Luma`; no telemetry. Profile URLs are not exposed to the renderer.
+Windows 10 / 11 x64 Mihomo client. Pure white content, a wide sidebar, light/dark/system themes and custom colors.
 
 ## Download
 
-Windows EXEs are available from GitHub Releases. Both NSIS installer and standalone portable EXE include the x64 Mihomo engine. The portable EXE extracts its runtime on launch; profile data still lives in the user application-data directory. Verify SHA-256 against `SHA256SUMS.txt`.
+[GitHub Releases](https://github.com/Nilarf2/luma-proxy/releases) provides an installer and a portable EXE. Both include Mihomo and the optional Windows service helper. They are unsigned. Compare the downloaded file with `SHA256SUMS.txt`.
 
-The installer finish page includes a checked-by-default desktop-shortcut option.
+The installer finish page has a **创建桌面快捷方式** checkbox. Login startup is available in the installed app; the portable edition keeps data in the same user application-data directory and does not register login startup.
 
-Enable **开机启动** in Settings to open the installed app when signing in to Windows. **启动时自动检测** is enabled by default and checks the local environment whenever Luma opens; it does not automatically connect. The portable build supports the same checks but cannot register login startup.
+## Features
 
-This preview is unsigned. Windows SmartScreen may show an unknown-publisher prompt. No TUN, ARM64, auto-updates, automatic subscription scheduling, Base64 subscriptions, individual URI imports, or external file providers in this release. System proxy only affects applications that honor Windows proxy settings. Import only trusted configurations. HTTPS subscriptions are recommended. URLs and IDs receive basic log redaction, not a guarantee that arbitrary provider output contains no private data.
+- Import local YAML, subscription URLs, Base64 subscriptions and common SS/Trojan/VLESS/VMess URIs. Edit/export profiles, combine sources, apply global/per-profile YAML or isolated JavaScript, and manage rules, nodes and groups.
+- Rule/global/direct modes, selectors, latency tests, provider refresh/health checks, searchable rules, per-connection controls and live logs.
+- System proxy with bypass, PAC and ownership-aware recovery. TUN with configurable stack, routes and DNS. IPv6, LAN access and listener ports are configurable.
+- Optional protected Windows service for TUN from a normal desktop account. Installation/removal requires an explicit UAC action. Without the service, TUN requires an elevated app.
+- Subscription usage/expiry and automatic refresh; local startup diagnostics; tray controls; silent launch, global hotkeys, notifications, network-change reconnect and UWP loopback settings.
+- Local/scheduled backups, explicit WebDAV upload/restore, verified app downloads and stable/alpha Mihomo updates.
+- Light/dark/system appearance, preset/custom accent and sidebar colors, navigation order/visibility and custom CSS.
+
+All network tests are user initiated unless an interval is explicitly enabled. Startup diagnostics check the local environment; they do not test nodes, fetch subscriptions or connect automatically. Automatic connection is a separate setting. There is no telemetry.
+
+TUN installation and service controls affect Windows networking. The service runs a fixed protected core, accepts requests only from its installing user and keeps its privileged controller secret private. Local provider files must be explicitly imported as assets. Custom desktop cores are currently unavailable in service mode; unsupported configurations fail visibly rather than silently running a different core.
+
+## Configuration
+
+Profiles and settings live under `%APPDATA%/Luma`. Backups contain subscription credentials and node secrets; store them privately. WebDAV credentials are used for the requested operation and are not saved in settings. HTTPS URLs are recommended.
+
+Composition order is source profiles → selected profile → global YAML → profile YAML → global JavaScript → profile JavaScript → managed runtime networking. Conflicting node/group/provider names across sources fail validation. Source rules precede the selected profile's rules, excluding source catch-all rules. JavaScript receives JSON configuration only, with bounded time and memory and no Node APIs.
+
+See [capability and acceptance checklist](docs/PARITY.md) for known differences from Clash Verge Rev. This version does not establish complete feature parity. Windows ARM64, interactive UAC behavior and a genuinely non-elevated desktop require their own acceptance coverage. Some privileged file/certificate configurations are intentionally constrained. GEOIP/GEOSITE configurations may need first-use data downloads.
 
 ## Development
 
-Node.js 24 LTS or newer:
+Node.js 24+ and .NET 8 SDK:
 
 ```sh
 npm ci
 npm test
-npm run dev           # renderer preview, no fake connection data
-npm run core:win      # checksum-verified official Windows kernel
-npm start             # Windows desktop app
-npm run dist:win      # Windows NSIS installer + portable EXE
+npm run dev
+npm run core:win
+dotnet run --project service/tests/Policy.Tests.csproj -c Release
+dotnet publish service/Luma.Service.csproj -c Release -r win-x64 --self-contained true -o resources/service
+npm run dist:win
 ```
 
-GitHub Actions builds on Windows. `npm run core:linux` enables an isolated real-kernel integration test on Linux without altering host proxy settings. `npm run test:ui` runs UI smoke tests with Chromium (`CHROMIUM_PATH` can override the browser executable).
-
-## Architecture
-
-`src/`: React UI, `src/themes.css`: palette tokens. `electron/`: sandboxed renderer bridge, lifecycle, subscriptions, kernel management, Windows proxy recovery. The controller uses a random loopback port and per-run secret. Subscription configs cannot enable LAN listeners, TUN or external management endpoints; provider cache paths are contained in the application data directory.
-
-## Validation
-
-Automated checks cover subscription validation, configuration overrides, profile storage, local startup diagnostics, proxy ownership/recovery via a mocked registry, and an isolated real Mihomo controller/proxy lifecycle. UI tests cover navigation, import, settings, diagnostics, node switching and errors with a deterministic bridge fixture. Windows CI runs the packaged EXE to verify startup checks and their saved preference, local YAML import, the bundled kernel, real HTTP forwarding, Windows registry proxy settings, disconnect/normal-exit restoration, and recovery after forced main-process termination. It also checks both EXE headers and records SHA-256 checksums. Installer interaction, SmartScreen, tray presentation, and long-term behavior still require personal Windows desktop acceptance. Configurations using GEOIP/GEOSITE may need online data downloads on first use.
+`npm run core:linux` enables the real-core integration test on Linux. `npm run test:ui` runs browser interaction checks; `CHROMIUM_PATH` can select an installed Chromium binary. Windows CI builds the native helper, tests service policy, exercises actual TUN/route/owner-death cleanup using local fixtures, tests the packaged app and proxy recovery, then builds both EXEs. No real subscription or public latency endpoint is used in automated tests.
 
 ## License
 
-GPL-3.0-only. See LICENSE and THIRD-PARTY-NOTICES.md. No Apple assets or trademarks are used.
+GPL-3.0-only. See [LICENSE](LICENSE), [third-party notices](THIRD-PARTY-NOTICES.md) and [service architecture](service/README.md).

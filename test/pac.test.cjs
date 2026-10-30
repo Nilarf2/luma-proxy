@@ -1,0 +1,7 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const { PacServer, pacScript } = require('../electron/pac.cjs');
+test('default PAC directs local hosts and sends public hosts through the active core', () => { const scope = { isPlainHostName: host => !host.includes('.') }; vm.runInNewContext(pacScript(19876), scope); assert.equal(scope.FindProxyForURL('http://localhost/', 'localhost'), 'DIRECT'); assert.match(scope.FindProxyForURL('https://example.test/', 'example.test'), /PROXY 127\.0\.0\.1:19876/); });
+test('PAC editor validates function, script size and evaluation timeout', () => { assert.throws(() => pacScript(1000, 'const foo = 1;'), /FindProxyForURL/); assert.throws(() => pacScript(1000, 'while(true){}'), /timed out/); assert.throws(() => pacScript(1000, 'x'.repeat(65537)), /64 KB/); assert.throws(() => pacScript(0), /端口/); });
+test('PAC server only serves the random local path and closes cleanly', async () => { const server = new PacServer(); try { const url = await server.start(19876); assert.match(url, /^http:\/\/127\.0\.0\.1:\d+\/[a-f0-9]{32}\.pac$/); const response = await fetch(url); assert.equal(response.status, 200); assert.match(response.headers.get('content-type'), /proxy-autoconfig/); assert.match(await response.text(), /19876/); assert.equal((await fetch(new URL('/not-owned.pac', url))).status, 404); } finally { await server.stop(); } assert.equal(server.url, null); });

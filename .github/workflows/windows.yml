@@ -16,9 +16,18 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Verify service request policy
+        run: dotnet run --project service/tests/Policy.Tests.csproj -c Release
+      - name: Build protected Windows service
+        run: dotnet publish service/Luma.Service.csproj -c Release -r win-x64 --self-contained true -o resources/service
       - run: npm ci --no-audit --no-fund
       - run: npm test
       - run: npm run core:win
+      - name: Verify protected service and real TUN lifecycle
+        run: node scripts/service-smoke.mjs
       - run: npm run build
       - run: npx electron-builder --win --x64 --dir --publish never
         env:

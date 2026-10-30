@@ -1,7 +1,7 @@
 {
   "name": "luma-proxy",
-  "version": "0.1.2",
-  "description": "A quieter connection. Minimal Windows proxy client.",
+  "version": "0.2.0",
+  "description": "Minimal Windows Mihomo client.",
   "main": "electron/main.cjs",
   "author": "Luma contributors",
   "license": "GPL-3.0-only",
@@ -45,6 +45,10 @@
       {
         "from": "resources/core",
         "to": "core"
+      },
+      {
+        "from": "resources/service",
+        "to": "service"
       },
       {
         "from": "resources/icon.png",
