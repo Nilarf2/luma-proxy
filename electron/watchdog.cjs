@@ -1,5 +1,6 @@
 const { spawn } = require('node:child_process');
 const path = require('node:path');
+const fs = require('node:fs');
 // A native Windows process survives termination of the Electron process tree.
 function startWatchdog(pid, dir, binary) {
   const journal = Buffer.from(path.join(dir, 'proxy-recovery.json'), 'utf8').toString('base64');
@@ -34,7 +35,8 @@ try {
 } catch { Add-Content -LiteralPath $log -Value ($_ | Out-String) }
 try { Get-CimInstance Win32_Process -Filter 'ParentProcessId = ${Number(pid)}' | Where-Object { $_.ExecutablePath -eq $exe } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } } catch { }
 `;
-  const watcher = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { detached: true, stdio: 'ignore', windowsHide: true });
-  watcher.on('error', () => {}); watcher.unref();
+  const output=fs.openSync(path.join(dir,'watchdog-output.log'),'a');
+  const watcher = spawn(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { detached: true, stdio: ['ignore',output,output], windowsHide: true });
+  watcher.on('error', error => fs.appendFileSync(path.join(dir,'watchdog-output.log'),error.message)); watcher.unref(); fs.closeSync(output);
 }
 module.exports = { startWatchdog };
