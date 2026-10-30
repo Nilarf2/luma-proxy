@@ -22,6 +22,7 @@ jobs:
       - run: npm run dist:win
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - run: npm run test:windows
       - name: Verify PE and record checksums
         shell: pwsh
         run: |

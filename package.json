@@ -1,8 +1,91 @@
 {
-  "name": "luma-proxy", "version": "0.1.0", "description": "A quieter connection. Minimal Windows proxy client.",
-  "main": "electron/main.cjs", "author": "Luma contributors", "license": "GPL-3.0-only",
-  "scripts": { "dev": "vite --host 127.0.0.1", "start": "npm run build && electron .", "build": "vite build", "test": "node --test test/*.test.cjs", "core:win": "node scripts/fetch-core.mjs win32", "core:linux": "node scripts/fetch-core.mjs linux", "dist:win": "npm run build && electron-builder --win --x64 --publish never", "test:ui": "node scripts/ui-smoke.mjs" },
-  "dependencies": { "react": "19.3.1", "react-dom": "19.3.1", "lucide-react": "1.65.0", "yaml": "2.9.1" },
-  "devDependencies": { "electron": "45.1.0", "electron-builder": "26.18.0", "vite": "8.3.5", "@playwright/test": "1.58.2", "pngjs": "7.0.0" },
-  "build": { "appId": "app.luma.proxy", "productName": "Luma", "asar": true, "directories": { "output": "release" }, "files": ["dist/**/*", "electron/**/*", "package.json"], "extraResources": [{ "from": "resources/core", "to": "core" }, {"from":"resources/icon.png","to":"icon.png"}, {"from":"LICENSE","to":"LICENSE"}, {"from":"THIRD-PARTY-NOTICES.md","to":"THIRD-PARTY-NOTICES.md"}], "win": { "icon":"resources/icon.ico", "target": [{ "target": "nsis", "arch": ["x64"] }, { "target": "portable", "arch": ["x64"] }], "artifactName": "Luma-${version}-${arch}-${target}.${ext}" }, "nsis": { "oneClick": false, "perMachine": false, "allowToChangeInstallationDirectory": true, "createDesktopShortcut": true, "deleteAppDataOnUninstall": false }, "portable": {"artifactName":"Luma-${version}-x64-portable.exe"} }
+  "name": "luma-proxy",
+  "version": "0.1.0",
+  "description": "A quieter connection. Minimal Windows proxy client.",
+  "main": "electron/main.cjs",
+  "author": "Luma contributors",
+  "license": "GPL-3.0-only",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "start": "npm run build && electron .",
+    "build": "vite build",
+    "test": "node --test test/*.test.cjs",
+    "core:win": "node scripts/fetch-core.mjs win32",
+    "core:linux": "node scripts/fetch-core.mjs linux",
+    "dist:win": "npm run build && electron-builder --win --x64 --publish never",
+    "test:ui": "node scripts/ui-smoke.mjs",
+    "test:windows": "node scripts/windows-smoke.mjs"
+  },
+  "dependencies": {
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "lucide-react": "1.65.0",
+    "yaml": "2.9.1"
+  },
+  "devDependencies": {
+    "electron": "45.1.0",
+    "electron-builder": "26.18.0",
+    "vite": "8.3.5",
+    "@playwright/test": "1.58.2",
+    "pngjs": "7.0.0"
+  },
+  "build": {
+    "appId": "app.luma.proxy",
+    "productName": "Luma",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/core",
+        "to": "core"
+      },
+      {
+        "from": "resources/icon.png",
+        "to": "icon.png"
+      },
+      {
+        "from": "LICENSE",
+        "to": "LICENSE"
+      },
+      {
+        "from": "THIRD-PARTY-NOTICES.md",
+        "to": "THIRD-PARTY-NOTICES.md"
+      }
+    ],
+    "win": {
+      "icon": "resources/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "Luma-${version}-${arch}-Setup.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "deleteAppDataOnUninstall": false
+    },
+    "portable": {
+      "artifactName": "Luma-${version}-x64-portable.exe"
+    }
+  }
 }
