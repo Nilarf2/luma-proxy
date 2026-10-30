@@ -33,7 +33,8 @@ public static class LumaDetachedProcess {
 [LumaDetachedProcess]::Start($p,$line)
 `;
 
-async function startWatchdog(pid, dir, binary) {
+async function startWatchdog(pid, dir, binary, isCancelled = () => false) {
+  if (isCancelled()) throw Error('恢复进程启动已取消');
   if (process.env.LUMA_TEST_WATCHDOG === 'unavailable') throw Error('异常退出保护暂不可用');
   const token = crypto.randomBytes(12).toString('hex');
   const readyFile = path.join(dir, `recovery-ready-${pid}-${token}.json`);
@@ -97,24 +98,39 @@ $r.ProcessId
   for (const [method, launcher] of methods) {
     let watcherPid;
     try {
+      if (isCancelled()) throw Error('恢复进程启动已取消');
+      fs.rmSync(readyFile, { force: true });
       watcherPid = Number(await ps(common + launcher, 12000));
       if (!Number.isInteger(watcherPid) || watcherPid <= 0) throw Error('未能取得恢复进程编号');
       for (let attempt = 0; attempt < 100; attempt++) {
-        try {
-          if (fs.readFileSync(readyFile, 'utf8') === token) {
-            fs.writeFileSync(path.join(dir, 'watchdog-launch.json'), JSON.stringify({ pid: watcherPid, owner: pid, method }));
-            return { pid: watcherPid, method };
-          }
-        } catch {}
+        if (isCancelled()) throw Error('恢复进程启动已取消');
+        let ready = false;
+        try { ready = fs.readFileSync(readyFile, 'utf8') === token; } catch {}
+        if (ready) {
+          const started = await ps(`(Get-Process -Id ${watcherPid} -ErrorAction Stop).StartTime.ToFileTimeUtc().ToString()`, 5000);
+          if (!/^\d+$/.test(started)) throw Error('未能验证恢复进程');
+          if (isCancelled()) throw Error('恢复进程启动已取消');
+          fs.writeFileSync(path.join(dir, 'watchdog-launch.json'), JSON.stringify({ pid: watcherPid, owner: pid, method, started }));
+          return { pid: watcherPid, method, started, readyFile, token };
+        }
         await new Promise(resolve => setTimeout(resolve, 100));
       }
       throw Error('Windows 恢复进程未能就绪');
     } catch (error) {
       failures.push(`${method}: ${error.message}`);
-      if (watcherPid) await ps(`Stop-Process -Id ${watcherPid} -Force -ErrorAction SilentlyContinue`).catch(() => {});
+      if (watcherPid) await ps(`Stop-Process -Id ${watcherPid} -Force -ErrorAction SilentlyContinue`, 5000).catch(() => {});
+      fs.rmSync(readyFile, { force: true });
+      if (isCancelled()) break;
     }
   }
   fs.rmSync(scriptFile, { force: true }); fs.rmSync(readyFile, { force: true });
   throw Error(failures.join('\n'));
 }
-module.exports = { startWatchdog };
+async function checkWatchdog(handle) {
+  if (!handle || !Number.isInteger(handle.pid) || handle.pid <= 0 || !/^\d+$/.test(handle.started)) return false;
+  try { if (fs.readFileSync(handle.readyFile, 'utf8') !== handle.token) return false; }
+  catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+  const started = await ps(`$p=Get-Process -Id ${handle.pid} -ErrorAction SilentlyContinue; if($null -ne $p){$p.StartTime.ToFileTimeUtc().ToString()}`, 5000);
+  return started === handle.started;
+}
+module.exports = { startWatchdog, checkWatchdog };

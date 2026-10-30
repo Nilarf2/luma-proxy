@@ -33,6 +33,13 @@ async function write(values) {
 }
 class WindowsProxy {
   constructor(dir) { this.file = path.join(dir, 'proxy-recovery.json'); this.enabled = false; }
+  async inspect() {
+    const current = await read();
+    const journal = fs.existsSync(this.file) ? JSON.parse(fs.readFileSync(this.file, 'utf8')) : null;
+    const matches = !!journal && current.ProxyServer === journal.ours?.ProxyServer && current.ProxyEnable === journal.ours?.ProxyEnable;
+    const ownership = matches ? (journal.ownerPid === process.pid ? 'ours' : 'stale') : current.ProxyEnable === 1 ? 'external' : 'disabled';
+    return { ownership, recoveryPending: !!journal };
+  }
   async enable(port, corePid) {
     if (this.enabled) return;
     // Preserve the original snapshot until recovery has completed successfully.

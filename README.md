@@ -11,6 +11,7 @@ Porcelain white, generous spacing, restrained sage accents. Built for Windows 10
 - Select nodes within Selector groups; test latency with bounded concurrency.
 - Real connection totals, transfer speeds, active connections, and sanitized diagnostic logs.
 - Tray controls, single-instance, optional login startup, minimize to tray.
+- Automatic local startup checks for the bundled kernel, recovery protection, Windows system proxy, and login startup. Review results on the dashboard or in Settings, rerun manually, or disable automatic checks. Checks do not connect to nodes, measure latency, or update subscriptions.
 - Restore previous Windows proxy settings on disconnect/quit, with an independent watchdog and next-launch recovery. The watchdog can start without WMI; if recovery protection cannot start, the UI remains available and system proxy activation is refused with an explanation. Respect settings changed by another app.
 - Local-only profile storage under `%APPDATA%/Luma`; no telemetry. Profile URLs are not exposed to the renderer.
 
@@ -19,6 +20,8 @@ Porcelain white, generous spacing, restrained sage accents. Built for Windows 10
 Windows EXEs are available from GitHub Releases. Both NSIS installer and standalone portable EXE include the x64 Mihomo engine. The portable EXE extracts its runtime on launch; profile data still lives in the user application-data directory. Verify SHA-256 against `SHA256SUMS.txt`.
 
 The installer finish page includes a checked-by-default desktop-shortcut option.
+
+Enable **开机启动** in Settings to open the installed app when signing in to Windows. **启动时自动检测** is enabled by default and checks the local environment whenever Luma opens; it does not automatically connect. The portable build supports the same checks but cannot register login startup.
 
 This preview is unsigned. Windows SmartScreen may show an unknown-publisher prompt. No TUN, ARM64, auto-updates, automatic subscription scheduling, Base64 subscriptions, individual URI imports, or external file providers in this release. System proxy only affects applications that honor Windows proxy settings. Import only trusted configurations. HTTPS subscriptions are recommended. URLs and IDs receive basic log redaction, not a guarantee that arbitrary provider output contains no private data.
 
@@ -43,7 +46,7 @@ GitHub Actions builds on Windows. `npm run core:linux` enables an isolated real-
 
 ## Validation
 
-Automated checks cover subscription validation, configuration overrides, profile storage, proxy ownership/recovery via a mocked registry, and an isolated real Mihomo controller/proxy lifecycle. UI tests cover navigation, import, settings, node switching and errors with a deterministic bridge fixture. Windows CI runs the packaged EXE to verify local YAML import, the bundled kernel, real HTTP forwarding, Windows registry proxy settings, disconnect/normal-exit restoration, and recovery after forced main-process termination. It also checks both EXE headers and records SHA-256 checksums. Installer interaction, SmartScreen, tray presentation, and long-term behavior still require personal Windows desktop acceptance. Configurations using GEOIP/GEOSITE may need online data downloads on first use.
+Automated checks cover subscription validation, configuration overrides, profile storage, local startup diagnostics, proxy ownership/recovery via a mocked registry, and an isolated real Mihomo controller/proxy lifecycle. UI tests cover navigation, import, settings, diagnostics, node switching and errors with a deterministic bridge fixture. Windows CI runs the packaged EXE to verify startup checks and their saved preference, local YAML import, the bundled kernel, real HTTP forwarding, Windows registry proxy settings, disconnect/normal-exit restoration, and recovery after forced main-process termination. It also checks both EXE headers and records SHA-256 checksums. Installer interaction, SmartScreen, tray presentation, and long-term behavior still require personal Windows desktop acceptance. Configurations using GEOIP/GEOSITE may need online data downloads on first use.
 
 ## License
 

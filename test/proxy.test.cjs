@@ -54,3 +54,26 @@ test('PowerShell errors decode CLIXML without exposing encoded commands', () => 
   assert.doesNotMatch(powershellError({ message: 'Command failed: powershell.exe -EncodedCommand SECRET' }), /SECRET|EncodedCommand/);
   assert.match(powershellError({ killed: true }), /超时/);
 });
+
+test('proxy inspection is read-only and distinguishes ownership without exposing registry values', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'luma-proxy-inspect-'));
+  try {
+    const f = fixture(dir);
+    assert.equal((await f.proxy.inspect()).ownership, 'disabled');
+    f.set({ ProxyEnable: 1, ProxyServer: 'other-app:90' });
+    assert.equal((await f.proxy.inspect()).ownership, 'external');
+    assert.equal(f.get().ProxyServer, 'other-app:90');
+    assert.equal(f.proxy.enabled, false);
+    await f.proxy.enable(12345);
+    const file = path.join(dir, 'proxy-recovery.json');
+    const saved = fs.readFileSync(file, 'utf8');
+    const state = await f.proxy.inspect();
+    assert.equal(state.ownership, 'ours');
+    assert.equal(state.recoveryPending, true);
+    assert.equal(fs.readFileSync(file, 'utf8'), saved);
+    assert.doesNotMatch(JSON.stringify(state), /12345|other-app/);
+    const journal = JSON.parse(saved); journal.ownerPid = 9999;
+    fs.writeFileSync(file, JSON.stringify(journal));
+    assert.equal((await f.proxy.inspect()).ownership, 'stale');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

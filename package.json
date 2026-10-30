@@ -1,6 +1,6 @@
 {
   "name": "luma-proxy",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A quieter connection. Minimal Windows proxy client.",
   "main": "electron/main.cjs",
   "author": "Luma contributors",

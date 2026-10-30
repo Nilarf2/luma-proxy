@@ -1,26 +1,35 @@
 const { app, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
-const { startWatchdog } = require('./watchdog.cjs');
+const { startWatchdog, checkWatchdog } = require('./watchdog.cjs');
+const { Diagnostics } = require('./diagnostics.cjs');
 const crypto = require('node:crypto');
 const { Store } = require('./store.cjs');
 const { Engine } = require('./engine.cjs');
 const { parseProfile, downloadProfile } = require('./profile.cjs');
 const { WindowsProxy } = require('./windows-proxy.cjs');
-let win, tray, store, engine, proxy, quitting = false, busy = false, lastError = '', recoveryReady = false;
+let win, tray, store, engine, proxy, diagnostics, quitting = false, busy = false, lastError = '', recoveryHandle = null, recoveryTask = null;
 async function ensureRecovery() {
-  if (recoveryReady) return;
-  try { await startWatchdog(process.pid, store.dir, path.join(asset('core'), 'mihomo.exe')); recoveryReady = true; }
-  catch (error) { throw Error('异常退出保护未能启动，系统代理尚未启用。请重试连接。\n' + error.message); }
+  if (quitting) throw Error('Luma 正在退出');
+  if (recoveryTask) return recoveryTask;
+  recoveryTask = (async () => {
+    try {
+      if (recoveryHandle && await checkWatchdog(recoveryHandle)) return;
+      if (quitting) throw Error('Luma 正在退出');
+      recoveryHandle = await startWatchdog(process.pid, store.dir, path.join(asset('core'), 'mihomo.exe'), () => quitting);
+      if (!await checkWatchdog(recoveryHandle)) throw Error('恢复进程未通过存活验证');
+    } catch (error) { throw Error('异常退出保护未能启动，系统代理尚未启用。请重试连接。\n' + error.message); }
+  })();
+  try { await recoveryTask; } finally { recoveryTask = null; }
 }
 if (!app.requestSingleInstanceLock()) app.quit();
 app.on('second-instance', () => { win?.show(); win?.focus(); });
 const asset = name => app.isPackaged ? path.join(process.resourcesPath, name) : path.join(__dirname, '..', 'resources', name);
-const snapshot = () => ({ ...store.publicData(), running: engine.ready, systemProxy: proxy.enabled, busy, lastError, port: engine.ready ? engine.port : null, version: app.getVersion() });
-function publish() { if (win && !win.isDestroyed()) win.webContents.send('state', snapshot()); updateTray(); }
+const snapshot = () => ({ ...store.publicData(), running: engine.ready, systemProxy: proxy.enabled, busy, lastError, port: engine.ready ? engine.port : null, version: app.getVersion(), health: diagnostics.state });
+function publish() { if (quitting) return; if (win && !win.isDestroyed()) win.webContents.send('state', snapshot()); updateTray(); }
 async function exclusive(fn) { if (busy) throw Error('正在处理上一项操作，请稍候'); busy = true; publish(); try { lastError = ''; return await fn(); } catch(e) { lastError = e.message; throw e; } finally { busy = false; publish(); } }
 async function disconnect() { await proxy.restore(); await engine.stop(); publish(); }
-async function connect() { if (process.platform !== 'win32') throw Error('当前仅支持 Windows 客户端'); const profile = store.data.profiles.find(p => p.id === store.data.activeId); if (!profile) throw Error('请先添加并选择一个订阅'); await ensureRecovery(); await engine.start(fs.readFileSync(store.profilePath(profile.id), 'utf8'), store.data.mode); try { await proxy.enable(engine.port, engine.child?.pid); } catch(e) { await engine.stop(); throw e; } publish(); }
+async function connect() { if (process.platform !== 'win32') throw Error('当前仅支持 Windows 客户端'); const profile = store.data.profiles.find(p => p.id === store.data.activeId); if (!profile) throw Error('请先添加并选择一个订阅'); await ensureRecovery(); await engine.start(fs.readFileSync(store.profilePath(profile.id), 'utf8'), store.data.mode); try { await ensureRecovery(); await proxy.enable(engine.port, engine.child?.pid); } catch(e) { await engine.stop(); throw e; } publish(); }
 function updateTray() { if (!tray) return; tray.setToolTip(`Luma · ${engine.ready ? (proxy.enabled ? '已连接' : '内核运行中') : '未连接'}`); tray.setContextMenu(Menu.buildFromTemplate([{ label: '打开 Luma', click: () => { win.show(); win.focus(); } }, { label: engine.ready ? '断开连接' : '连接', enabled: !busy && !!store.data.activeId, click: () => exclusive(() => engine.ready ? disconnect() : connect()).catch(() => publish()) }, { type: 'separator' }, { label: '退出 Luma', click: () => app.quit() }])); }
 async function createWindow() {
   win = new BrowserWindow({ width: 1180, height: 800, minWidth: 940, minHeight: 690, title: 'Luma', backgroundColor: '#fafaf9', frame: false, show: false, icon: asset('icon.png'), webPreferences: { preload: path.join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true } });
@@ -35,12 +44,13 @@ function handle(name, fn) { ipcMain.handle(name, async (event, payload) => { if 
 app.whenReady().then(async () => {
   store = new Store(app.getPath('userData')); proxy = new WindowsProxy(store.dir);
   if (process.platform === 'win32') { try { await proxy.restore(); } catch { lastError = '恢复系统代理失败，请检查 Windows 代理设置'; }
-    try { await ensureRecovery(); } catch (error) { lastError = error.message; }
   }
   const coreDir = path.join(store.dir, 'core'); fs.mkdirSync(coreDir, { recursive: true });
   const bundled = asset('core'); if (fs.existsSync(bundled)) for (const f of fs.readdirSync(bundled)) if (/\.(dat|mmdb)$/.test(f) && !fs.existsSync(path.join(coreDir, f))) fs.copyFileSync(path.join(bundled, f), path.join(coreDir, f));
   engine = new Engine(coreDir, path.join(bundled, process.platform === 'win32' ? 'mihomo.exe' : 'mihomo'), () => { proxy.restore().catch(() => { lastError = '恢复系统代理失败'; }).finally(() => { lastError ||= '内核意外停止，请检查配置后重新连接'; publish(); }); });
+  diagnostics = new Diagnostics({ platform: process.platform, binary: engine.binary, ensureRecovery, inspectProxy: () => proxy.inspect(), getLoginSettings: () => app.getLoginItemSettings(), launchAtLogin: () => store.data.launchAtLogin, portable: !!process.env.PORTABLE_EXECUTABLE_DIR, onChange: publish });
   handle('state', snapshot);
+  handle('health:check', () => diagnostics.run());
   handle('toggle', () => exclusive(() => engine.ready ? disconnect() : connect()));
   handle('profile:import', payload => exclusive(async () => {
     if (!payload || !['url', 'file'].includes(payload.type)) throw Error('导入方式无效');
@@ -59,9 +69,10 @@ app.whenReady().then(async () => {
   handle('node:delay', async name => { if (!engine.ready || typeof name !== 'string' || name.length > 1024) throw Error('请先连接'); return engine.api(`/proxies/${encodeURIComponent(name)}/delay?timeout=7000&url=${encodeURIComponent('https://www.gstatic.com/generate_204')}`); });
   handle('connections:clear', () => engine.ready ? engine.api('/connections', 'DELETE') : null);
   handle('logs', () => engine.logs);
-  handle('settings', payload => exclusive(async () => { if (typeof payload?.closeToTray === 'boolean') store.data.closeToTray = payload.closeToTray; if (typeof payload?.launchAtLogin === 'boolean') { if (process.platform !== 'win32') throw Error('仅支持 Windows'); if (process.env.PORTABLE_EXECUTABLE_DIR) throw Error('便携版不支持开机启动，请使用安装版'); app.setLoginItemSettings({ openAtLogin: payload.launchAtLogin }); store.data.launchAtLogin = payload.launchAtLogin; } store.save(); }));
+  handle('settings', payload => exclusive(async () => { if (typeof payload?.closeToTray === 'boolean') store.data.closeToTray = payload.closeToTray; if (typeof payload?.startupCheck === 'boolean') store.data.startupCheck = payload.startupCheck; if (typeof payload?.launchAtLogin === 'boolean') { if (process.platform !== 'win32') throw Error('仅支持 Windows'); if (process.env.PORTABLE_EXECUTABLE_DIR) throw Error('便携版不支持开机启动，请使用安装版'); app.setLoginItemSettings({ openAtLogin: payload.launchAtLogin }); store.data.launchAtLogin = payload.launchAtLogin; } store.save(); }));
   handle('window', action => { if (action === 'minimize') win.minimize(); else if (action === 'maximize') win.isMaximized() ? win.unmaximize() : win.maximize(); else if (action === 'close') win.close(); else if (action === 'quit') app.quit(); });
   tray = new Tray(nativeImage.createFromPath(asset('icon.png')).resize({ width: 24, height: 24 })); tray.on('double-click', () => { win.show(); win.focus(); }); updateTray(); await createWindow();
+  if (store.data.startupCheck) diagnostics.run().catch(() => {});
 }).catch(err => { dialog.showErrorBox('Luma 启动失败', err.message); app.exit(1); });
-app.on('before-quit', event => { if (quitting) return; event.preventDefault(); if (busy) { win?.show(); return; } quitting = true; (async () => { try { await proxy?.restore(); await engine?.stop(); } catch(e) { dialog.showErrorBox('请检查系统代理', '无法自动恢复 Windows 代理设置，请在系统设置中关闭代理后退出。'); } finally { app.quit(); } })(); });
+app.on('before-quit', event => { if (quitting) return; event.preventDefault(); if (busy) { win?.show(); return; } quitting = true; (async () => { try { await proxy?.restore(); await engine?.stop(); } catch(e) { dialog.showErrorBox('请检查系统代理', '无法自动恢复 Windows 代理设置，请在系统设置中关闭代理后退出。'); } finally { await recoveryTask?.catch(() => {}); app.quit(); } })(); });
 app.on('window-all-closed', () => { if (!tray) app.quit(); });
