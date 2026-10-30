@@ -1,17 +1,36 @@
-// Independent recovery even when Task Manager terminates the UI process.
-const { WindowsProxy, ps } = require('./windows-proxy.cjs');
-const [pid, dir, binary] = process.argv.slice(2);
-const proxy = new WindowsProxy(dir);
-const timer = setInterval(async () => {
-  try { process.kill(Number(pid), 0); } catch {
-    clearInterval(timer);
-    let failed = false;
-    try { await proxy.restore(Number(pid)); } catch { failed = true; }
-    // Only stop the exact bundled kernel whose recorded parent is this app.
-    if (binary && /^\d+$/.test(pid)) {
-      const encoded = Buffer.from(binary, 'utf8').toString('base64');
-      try { await ps(`$exe=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')); Get-CimInstance Win32_Process -Filter 'ParentProcessId = ${pid}' | Where-Object { $_.ExecutablePath -eq $exe } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`); } catch { failed = true; }
+const { spawn } = require('node:child_process');
+const path = require('node:path');
+// A native Windows process survives termination of the Electron process tree.
+function startWatchdog(pid, dir, binary) {
+  const journal = Buffer.from(path.join(dir, 'proxy-recovery.json'), 'utf8').toString('base64');
+  const exe = Buffer.from(binary, 'utf8').toString('base64');
+  const script = `
+$ErrorActionPreference='Stop'
+$file=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${journal}'))
+$exe=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${exe}'))
+Wait-Process -Id ${Number(pid)} -ErrorAction SilentlyContinue
+try {
+ if(Test-Path -LiteralPath $file) {
+  $j=Get-Content -LiteralPath $file -Raw | ConvertFrom-Json
+  if($j.ownerPid -eq ${Number(pid)}) {
+   $key='HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings'
+   $current=Get-ItemProperty $key
+   if($current.ProxyServer -eq $j.ours.ProxyServer -and $current.ProxyEnable -eq $j.ours.ProxyEnable) {
+    foreach($p in $j.previous.PSObject.Properties) {
+     if($null -eq $p.Value) { Remove-ItemProperty -Path $key -Name $p.Name -ErrorAction SilentlyContinue }
+     else { $t='String'; if($p.Name -eq 'ProxyEnable'){$t='DWord'}; New-ItemProperty -Path $key -Name $p.Name -Value $p.Value -PropertyType $t -Force | Out-Null }
     }
-    process.exit(failed ? 1 : 0);
+    Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class LumaRecoveryInet { [DllImport("wininet.dll", SetLastError=true)] public static extern bool InternetSetOption(IntPtr h,int o,IntPtr b,int l); }'
+    [LumaRecoveryInet]::InternetSetOption([IntPtr]::Zero,39,[IntPtr]::Zero,0) | Out-Null
+    [LumaRecoveryInet]::InternetSetOption([IntPtr]::Zero,37,[IntPtr]::Zero,0) | Out-Null
+   }
+   if((Get-Content -LiteralPath $file -Raw | ConvertFrom-Json).ownerPid -eq ${Number(pid)}) { Remove-Item -LiteralPath $file -Force }
   }
-}, 1500);
+ }
+} catch { }
+try { Get-CimInstance Win32_Process -Filter 'ParentProcessId = ${Number(pid)}' | Where-Object { $_.ExecutablePath -eq $exe } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } } catch { }
+`;
+  const watcher = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { detached: true, stdio: 'ignore', windowsHide: true });
+  watcher.on('error', () => {}); watcher.unref();
+}
+module.exports = { startWatchdog };

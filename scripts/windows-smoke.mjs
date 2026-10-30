@@ -10,7 +10,7 @@ const registry=()=>JSON.parse(execFileSync('powershell.exe',['-NoProfile','-NonI
 const before=registry();const dir=await fs.mkdtemp(path.join(os.tmpdir(),'luma-acceptance-'));const profile=path.join(dir,'fixture.yaml');
 await fs.writeFile(profile,'proxies:\n  - name: Local test\n    type: socks5\n    server: 127.0.0.1\n    port: 1\nproxy-groups:\n  - name: Proxy\n    type: select\n    proxies: [DIRECT, Local test]\nrules:\n  - MATCH,DIRECT\n');
 const local=http.createServer((req,res)=>res.end('luma-windows-proxy-ok'));await new Promise(r=>local.listen(0,'127.0.0.1',r));
-let app;
+let app;let failed=false;
 try{
  app=await electron.launch({executablePath:path.resolve('release/win-unpacked/Luma.exe'),args:[`--user-data-dir=${path.join(dir,'data')}`],timeout:60000});
  await app.evaluate(({dialog},file)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[file]});},profile);
@@ -27,4 +27,6 @@ try{
  console.log('Forced termination test connected');const processHandle=app.process();const exited=new Promise(r=>processHandle.once('exit',r));processHandle.kill('SIGKILL');await exited;app=null;
  for(let i=0;i<20;i++){try{assert.deepEqual(registry(),before);break;}catch{if(i===19)throw Error('Watchdog did not restore system proxy');await new Promise(r=>setTimeout(r,1000));}}
  console.log('Windows packaged EXE passed: real import, bundled kernel, system proxy, HTTP forwarding, disconnect restore, exit restore, forced termination recovery, no renderer errors');
-}catch(error){console.error('WINDOWS_ACCEPTANCE_FAILURE',error);throw error;}finally{await app?.close().catch(()=>{});local.close();await fs.rm(dir,{recursive:true,force:true,maxRetries:8,retryDelay:1000}).catch(e=>console.warn('Temporary test data remains locked:',e.code));}
+}catch(error){failed=true;console.error('WINDOWS_ACCEPTANCE_FAILURE',error);}finally{if(app)await Promise.race([app.close().catch(()=>{}),new Promise(r=>setTimeout(r,5000))]);local.close();await fs.rm(dir,{recursive:true,force:true,maxRetries:2,retryDelay:300}).catch(e=>console.warn('Temporary test data remains locked:',e.code));}
+
+process.exit(failed?1:0);
