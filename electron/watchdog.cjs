@@ -11,7 +11,7 @@ $file=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${journal}'))
 $exe=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${exe}'))
 $log=$file+'.watchdog.log'
 Add-Content -LiteralPath $log -Value ('watching ${Number(pid)} at '+(Get-Date))
-Wait-Process -Id ${Number(pid)} -ErrorAction SilentlyContinue
+while(Get-CimInstance Win32_Process -Filter 'ProcessId = ${Number(pid)}') { Start-Sleep -Milliseconds 800 }
 Add-Content -LiteralPath $log -Value 'parent exited'
 try {
  if(Test-Path -LiteralPath $file) {
