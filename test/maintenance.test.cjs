@@ -77,3 +77,20 @@ test('WebDAV round trip uses headers, handles conflicts and honors restore cance
     confirmation = 0; assert.equal(await handlers.get('backup:webdav:download')(credentials), null); assert.equal(disconnected, 1);
   } finally { maintenance.dispose(); await new Promise(resolve => server.close(resolve)); f.close(); }
 });
+test('backup excludes controller token and restore preserves only the local token with listener disabled', async () => {
+  const f = fixture();
+  try {
+    const local = 'local-controller-token-24-chars';
+    f.store.data.controller = { enabled: true, port: 9097, secret: local, origins: ['https://local.test'] };
+    const b = makeBackup(f.store);
+    assert.equal(b.settings.controller.enabled, false);
+    assert.equal(Object.hasOwn(b.settings.controller, 'secret'), false);
+    assert.equal(JSON.stringify(b).includes(local), false);
+    b.settings.controller.secret = 'foreign-controller-token-24-chars';
+    b.settings.controller.enabled = true;
+    await restoreBackup(f.store, b, async () => {});
+    assert.equal(f.store.data.controller.secret, local);
+    assert.equal(f.store.data.controller.enabled, false);
+    assert.equal(new Store(f.dir).data.controller.secret, local);
+  } finally { f.close(); }
+});

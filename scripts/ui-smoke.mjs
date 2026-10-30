@@ -23,26 +23,29 @@ try {
     const stored = JSON.parse(localStorage.getItem('luma-test-state') || 'null');
     let state = stored || { profiles: [], activeId: null, running: false, systemProxy: false, mode: 'rule', closeToTray: true, launchAtLogin: false, startupCheck: true, appearance: { mode: 'light', accent: '#2563eb', sidebar: null }, core: { mixedPort: 0, httpPort: 0, socksPort: 0, allowLan: false, ipv6: false, logLevel: 'info', bypass: '', tun: { enabled: false, stack: 'mixed', autoRoute: true, strictRoute: false, mtu: 1500, routeExcludeAddress: [] }, dns: { enabled: true, enhancedMode: 'fake-ip', nameserver: [], fallback: [], fakeIpFilter: [] } }, privilege: { admin: false, platform: 'win32' }, version: 'test', health: { checking: false, checkedAt: '2026-10-30T08:15:00Z', status: 'ok', items: [{ id: 'kernel', label: '本地内核', status: 'ok', detail: '内核已就绪' }, { id: 'systemProxy', label: '系统代理', status: 'ok', detail: '当前代理设置正常' }] } };
     const callbacks = [], calls = [];
+    const latencyRequests = new Map();
     let node = 'Tokyo 01', connections = [{ id: 'c1', host: 'example.com', process: 'browser.exe', rule: 'MATCH', chains: [node], upload: 123, download: 321 }], logs = ['[info] test connection'];
     window.__calls = calls;
     const publish = () => { localStorage.setItem('luma-test-state', JSON.stringify(state)); callbacks.forEach(callback => callback(structuredClone(state))); };
     window.luma = { onState: callback => { callbacks.push(callback); return () => {}; }, invoke: async (channel, payload) => {
       calls.push({ channel, payload });
       if (channel === 'state') return structuredClone(state);
-      if (channel === 'profile:import') { state.profiles.push({ id: state.profiles.length ? 'second' : 'test', name: payload.name || 'Test', remote: true, updatedAt: new Date().toISOString() }); state.activeId = 'test'; publish(); }
+      if (channel === 'profile:import') { state.profiles.push({ id: state.profiles.length ? state.profiles.length === 1 ? 'second' : `local-${state.profiles.length}` : 'test', name: payload.name || 'Test', remote: payload.type === 'url', updatedAt: new Date().toISOString() }); state.activeId = 'test'; publish(); }
       if (channel === 'toggle') { state.running = !state.running; state.systemProxy = state.running; state.tunRunning = state.running && state.core.tun.enabled; publish(); }
       if (channel === 'mode') { state.mode = payload; publish(); }
-      if (channel === 'settings') { Object.assign(state, payload); publish(); }
+      if (channel === 'settings') { const patch = structuredClone(payload); if (patch.controller) { const { secret, ...controller } = patch.controller; patch.controller = { ...state.controller, ...controller, hasSecret: secret ? true : state.controller?.hasSecret || false }; state.controllerStatus = { ...state.controllerStatus, listening: controller.enabled }; } Object.assign(state, patch); publish(); }
       if (channel === 'systemProxy') { state.systemProxy = payload; publish(); }
       if (channel === 'tun') { state.core.tun.enabled = payload; state.tunRunning = payload && state.running; publish(); }
-      if (channel === 'stats') return { upload: 1024, download: 4096, memory: { main: 1000000, renderer: 2000000, total: 3000000, core: null }, connections, groups: [{ name: 'Proxy', type: 'Selector', now: node, nodes: [{ name: 'Tokyo 01', type: 'Trojan', delay: 31 }, { name: 'Singapore 02', type: 'SS', delay: 80 }] }] };
+      if (channel === 'stats') return { upload: 1024, download: 4096, memory: { main: 1000000, renderer: 2000000, total: 3000000, core: null }, connections, groups: [{ name: 'Proxy', type: 'Selector', now: node, nodes: [{ id: '["Alpha","Tokyo 01"]', name: 'Tokyo 01', provider: 'Alpha', providers: ['Alpha'], type: 'Trojan', delay: 31 }, { id: '["Beta","Tokyo 01"]', name: 'Tokyo 01', provider: 'Beta', providers: ['Beta'], type: 'Trojan', delay: 82 }, { id: '[null,"Singapore 02"]', name: 'Singapore 02', provider: null, providers: [], type: 'SS', delay: 80 }] }] };
       if (channel === 'node:select') node = payload.name;
-      if (channel === 'node:delay') return { delay: 42 };
+      if (channel === 'node:delay') { if (window.__holdLatency) await new Promise((resolve, reject) => { latencyRequests.set(payload.requestId, { resolve, reject }); }); return { delay: 42 }; }
+      if (channel === 'node:delay:cancel') { for (const request of latencyRequests.values()) request.reject(Error('已取消延迟测试')); latencyRequests.clear(); }
       if (channel === 'connections:close') connections = connections.filter(c => c.id !== payload);
       if (channel === 'connections:clear') connections = [];
       if (channel === 'profile:update') throw Error('订阅下载失败（HTTP 503）');
       if (channel === 'profile:structured:get') return { rules: ['DOMAIN,example.com,Proxy', 'MATCH,DIRECT'], proxies: [{ name: 'Node', type: 'ss', server: 'example.net', port: 443, cipher: 'aes-128-gcm', password: 'test' }], groups: [{ name: 'Proxy', type: 'select', proxies: ['Node', 'DIRECT'] }] };
-      if (channel === 'profile:get') return { text: 'proxies: []\nrules: []\n', override: '', script: '', sourceIds: [] };
+      if (channel === 'profile:certificate:import') { if (window.__certificateFails) throw Error('证书与私钥不匹配'); window.__certificateImported = true; return { imported: true }; }
+      if (channel === 'profile:get') return { text: window.__certificateImported ? 'proxies: [{name: TLS Node, type: trojan, server: example.net, port: 443, password: test, certificate: imported}]\nrules: []\n' : 'proxies: [{name: TLS Node, type: trojan, server: example.net, port: 443, password: test}]\nrules: []\n', override: '', script: '', sourceIds: [] };
       if (channel === 'profile:save') { Object.assign(state.profiles.find(p => p.id === payload.id), payload); publish(); }
       if (channel === 'rules') return { rules: [{ type: 'DOMAIN', payload: 'example.com', proxy: 'Proxy' }], providers: { rules: { basic: { updatedAt: '2026-10-30T08:00:00Z' } }, proxies: {} } };
       if (channel === 'media:list') return [{ name: 'Netflix', status: 'Pending', region: null, check_time: null }, { name: 'ChatGPT Web', status: 'Pending', region: null, check_time: null }];
@@ -50,6 +53,8 @@ try {
       if (channel === 'media:cancel') window.__cancelMedia?.();
       if (channel === 'os:uwp-list') return [{ name: 'Test UWP', sid: 'S-1-test', enabled: window.__uwpEnabled || false }];
       if (channel === 'os:uwp-set') window.__uwpEnabled = payload.enabled;
+      if (channel === 'controller:webui:import') { state.controllerStatus = { ...state.controllerStatus, webUiImported: true }; publish(); }
+      if (channel === 'controller:webui:reset') { state.controllerStatus.webUiImported = false; publish(); }
       if (channel === 'icons:import') { state.icons ||= { tray: null, groups: {} }; const image = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='; if (payload.kind === 'tray') state.icons.tray = image; else state.icons.groups[payload.name] = image; publish(); }
       if (channel === 'icons:reset') { if (payload.kind === 'tray') state.icons.tray = null; else delete state.icons.groups[payload.name]; publish(); }
       if (channel === 'service:status') return state.service || { installed: false, running: false };
@@ -84,7 +89,7 @@ try {
   await called('privilege:elevate');
 
   await nav('代理节点').click();
-  await page.getByRole('button', { name: /Singapore 02/ }).click();
+  await page.locator('.node-row').filter({ hasText: 'Singapore 02' }).click();
   await page.locator('.node-row.selected').filter({ hasText: 'Singapore 02' }).waitFor();
   await page.getByText('策略组图标', { exact: true }).click();
   await page.getByRole('button', { name: '选择图标', exact: true }).click();
@@ -92,8 +97,20 @@ try {
   await page.locator('.group-icon').waitFor();
   await page.getByRole('button', { name: '重置图标', exact: true }).click();
   await called('icons:reset', payload => payload.kind === 'group');
-  await page.getByRole('button', { name: '测试延迟' }).click();
-  await page.getByText('42 ms').first().waitFor();
+  await page.evaluate(() => { window.__holdLatency = true; });
+  await page.getByRole('button', { name: '测试延迟 Tokyo 01 · Alpha', exact: true }).click();
+  await called('node:delay', payload => payload.provider === 'Alpha' && payload.requestId === '["Alpha","Tokyo 01"]');
+  await page.getByRole('button', { name: '停止测速 Tokyo 01 · Alpha', exact: true }).click();
+  await called('node:delay:cancel');
+  await page.getByRole('button', { name: '测试延迟 Tokyo 01 · Alpha', exact: true }).waitFor();
+  assert.equal(await page.getByText('超时', { exact: true }).count(), 0);
+  await page.evaluate(() => { window.__holdLatency = false; });
+  await page.getByRole('button', { name: '测试延迟 Tokyo 01 · Alpha', exact: true }).click();
+  await page.locator('.node-entry').filter({ hasText: 'Alpha' }).getByText('42 ms', { exact: true }).waitFor();
+  assert.equal(await page.locator('.node-entry').filter({ hasText: 'Beta' }).getByText('82 ms', { exact: true }).count(), 1);
+  await page.getByRole('button', { name: '测试延迟', exact: true }).click();
+  await called('node:delay', payload => payload.provider === 'Beta');
+  await page.getByRole('button', { name: '测试延迟', exact: true }).waitFor();
   await nav('活动连接').click();
   await page.getByRole('button', { name: 'example.com', exact: true }).click();
   await page.locator('.connection-detail').waitFor();
@@ -108,7 +125,18 @@ try {
   await importer.waitFor({ state: 'hidden' });
   await page.getByRole('article').filter({ hasText: '日常连接' }).getByRole('button', { name: '编辑', exact: true }).click();
   const editor = page.getByRole('dialog', { name: '编辑订阅' });
+  await editor.getByText('客户端证书', { exact: true }).click();
+  await editor.getByLabel('客户端证书节点').selectOption('TLS Node');
+  await page.evaluate(() => { window.__certificateFails = true; });
+  await editor.getByRole('button', { name: '导入客户端证书', exact: true }).click();
+  await page.getByRole('status').filter({ hasText: '证书与私钥不匹配' }).waitFor();
+  await page.getByRole('button', { name: '关闭提示' }).click();
+  await page.evaluate(() => { window.__certificateFails = false; });
+  await editor.getByRole('button', { name: '导入客户端证书', exact: true }).click();
+  await called('profile:certificate:import', payload => payload.id === 'test' && payload.node === 'TLS Node');
+  await page.waitForFunction(() => document.querySelector('[aria-label="订阅 YAML"]').value.includes('certificate: imported'));
   await editor.getByLabel('订阅 YAML', { exact: true }).fill('proxies: []\nrules: [MATCH,DIRECT]\n');
+  assert.equal(await editor.getByRole('button', { name: '导入客户端证书', exact: true }).isDisabled(), true);
   await editor.getByLabel('订阅名称', { exact: true }).fill('修改后的订阅');
   await editor.getByLabel('自动更新间隔', { exact: true }).fill('60');
   await editor.getByRole('button', { name: '覆写', exact: true }).click();
@@ -222,6 +250,28 @@ try {
   await page.getByLabel('延迟测试超时', { exact: true }).fill('5000');
   await page.getByRole('button', { name: '保存测速设置', exact: true }).click();
   await called('settings', payload => payload.latency?.timeout === 5000);
+  await page.getByText('外部控制器与 WebUI', { exact: true }).click();
+  assert.equal(await page.getByRole('switch', { name: '启用外部控制器', exact: true }).getAttribute('aria-checked'), 'false');
+  await page.getByRole('button', { name: '生成令牌', exact: true }).click();
+  const controllerToken = await page.getByLabel('外部控制器令牌', { exact: true }).inputValue();
+  assert.equal(controllerToken.length, 48);
+  await page.getByRole('button', { name: '显示令牌', exact: true }).click();
+  assert.equal(await page.getByLabel('外部控制器令牌', { exact: true }).getAttribute('type'), 'text');
+  await page.getByRole('button', { name: '添加本地 WebUI 来源', exact: true }).click();
+  await page.getByRole('switch', { name: '启用外部控制器', exact: true }).click();
+  await page.getByRole('button', { name: '保存控制器设置', exact: true }).click();
+  await called('settings', payload => payload.controller?.secret === controllerToken && payload.controller?.origins?.includes('http://127.0.0.1:9097'));
+  await page.waitForFunction(() => document.querySelector('[aria-label="外部控制器令牌"]').value === '');
+  await page.getByLabel('外部控制器端口', { exact: true }).fill('9098');
+  await page.getByRole('button', { name: '保存控制器设置', exact: true }).click();
+  await called('settings', payload => payload.controller?.port === 9098 && !Object.hasOwn(payload.controller, 'secret'));
+  await page.getByRole('button', { name: '导入 WebUI 目录', exact: true }).click();
+  await called('controller:webui:import');
+  await page.getByRole('button', { name: '打开 WebUI', exact: true }).click();
+  await called('controller:webui:open');
+  await page.getByRole('button', { name: '移除 WebUI', exact: true }).click();
+  await called('controller:webui:reset');
+  await page.getByText('外部控制器与 WebUI', { exact: true }).click();
   await page.getByLabel('混合端口', { exact: true }).fill('7890');
   await page.getByLabel('系统代理类型', { exact: true }).selectOption('pac');
   await page.getByLabel('PAC 脚本', { exact: true }).fill('function FindProxyForURL(url, host) { return "PROXY __PROXY__"; }');
@@ -292,6 +342,43 @@ try {
   await called('service:sync-core');
   await page.getByRole('button', { name: '安装更新', exact: true }).click();
   await called('app:install-update');
+  await nav('订阅管理').click();
+  await page.getByRole('button', { name: '新建配置', exact: true }).click();
+  assert.match(await importer.getByLabel('新配置 YAML').inputValue(), /MATCH,DIRECT/);
+  await importer.getByLabel('订阅名称', { exact: true }).fill('新空白配置');
+  await importer.getByRole('button', { name: '保存配置', exact: true }).click();
+  await called('profile:import', payload => payload.type === 'text' && payload.name === '新空白配置' && payload.text.includes('MATCH,DIRECT'));
+  await importer.waitFor({ state: 'hidden' });
+  const drop = async (text, filename) => {
+    const transfer = await page.evaluateHandle(({ text, filename }) => { const data = new DataTransfer(); if (filename) data.items.add(new File([text], filename, { type: 'text/yaml' })); else data.setData('text/plain', text); return data; }, { text, filename });
+    await page.locator('.app-shell').dispatchEvent('drop', { dataTransfer: transfer });
+    await transfer.dispose();
+  };
+  const importCount = () => page.evaluate(() => window.__calls.filter(call => call.channel === 'profile:import').length);
+  await drop('rules: ["MATCH,DIRECT"]', '拖放配置.yaml');
+  await called('profile:import', payload => payload.type === 'text' && payload.name === '拖放配置');
+  const beforeDrop = await importCount();
+  await drop('https://example.com/dropped-subscription');
+  await importer.getByLabel('订阅地址', { exact: true }).waitFor();
+  assert.equal(await importer.getByLabel('订阅地址', { exact: true }).inputValue(), 'https://example.com/dropped-subscription');
+  assert.equal(await importCount(), beforeDrop, 'Dropped URL waits for confirmation');
+  await importer.getByRole('button', { name: '关闭导入', exact: true }).click();
+  await drop('rules: ["MATCH,DIRECT"]');
+  assert.equal(await importer.getByLabel('新配置 YAML').inputValue(), 'rules: ["MATCH,DIRECT"]');
+  assert.equal(await importCount(), beforeDrop, 'Dropped YAML text waits for confirmation');
+  await importer.getByRole('button', { name: '保存配置', exact: true }).click();
+  await called('profile:import', payload => payload.type === 'text' && payload.name === '导入的配置');
+  await importer.waitFor({ state: 'hidden' });
+  const beforeInvalid = await importCount();
+  await drop('not yaml', 'notes.txt');
+  await page.getByText('请选择 YAML / YML 文件，单个不超过 8 MB', { exact: true }).waitFor();
+  assert.equal(await importCount(), beforeInvalid, 'Unsupported files are rejected');
+  await nav('设置').click();
+  await page.getByText('备选测试地址', { exact: true }).click();
+  await page.getByLabel('延迟测试地址列表', { exact: true }).fill('https://example.com/one\nhttps://example.com/two');
+  await page.getByLabel('选择延迟测试地址', { exact: true }).selectOption('https://example.com/two');
+  await page.getByRole('button', { name: '保存测速设置', exact: true }).click();
+  await called('settings', payload => payload.latency?.url === 'https://example.com/two' && payload.latency?.urls?.includes('https://example.com/one'));
   for (const width of [940, 1180, 1440]) { await page.setViewportSize({ width, height: 850 }); assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `No settings overflow at ${width}`); await nav('概览').click(); assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `No overview overflow at ${width}`); await nav('设置').click(); }
   await fs.mkdir('artifacts', { recursive: true });
   await nav('概览').click();
@@ -299,5 +386,5 @@ try {
   for (const width of [940, 1180]) { await page.setViewportSize({ width, height: 850 }); await page.screenshot({ path: `artifacts/overview-${width}.png` }); }
   await page.screenshot({ path: 'artifacts/overview.png' });
   assert.deepEqual(errors, []);
-  console.log('UI smoke passed: white layout, profiles, connection/TUN, nodes, granular connections, rules, logs, theme persistence/system mode, core/DNS/override settings, diagnostics, error handling and window widths');
+  console.log('UI smoke passed: white layout, profiles, connection/TUN, nodes, granular connections, rules, logs, theme persistence/system mode, core/DNS/override settings, diagnostics, blank/drop local profiles, confirmed text/URL drops, selected latency URLs, media/icon controls, error handling and window widths');
 } finally { await browser?.close(); server.kill(); }

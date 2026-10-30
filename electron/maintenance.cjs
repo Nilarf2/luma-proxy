@@ -16,12 +16,14 @@ const CORE_REPO = 'MetaCubeX/mihomo';
 function json(text) { return JSON.parse(text, (k, v) => { if (['__proto__', 'prototype', 'constructor'].includes(k)) throw Error('文件包含无效字段'); return v; }); }
 function makeBackup(store) {
   const assets = {};
+  const settings = structuredClone(store.data);
+  if (settings.controller) { delete settings.controller.secret; settings.controller.enabled = false; }
   for (const p of store.data.profiles) for (const filename of Object.values(p.localProviders || {})) {
     if (!/^[a-f0-9]{64}\.yaml$/.test(filename)) throw Error('本地集合文件无效');
     const file = path.join(store.dir, 'provider-assets', filename); if (fs.statSync(file).size > 8 * 1024 * 1024) throw Error('集合文件不能超过 8 MB');
     assets[filename] = fs.readFileSync(file, 'utf8');
   }
-  return { format: 'luma-backup', version: 1, createdAt: new Date().toISOString(), settings: structuredClone(store.data),
+  return { format: 'luma-backup', version: 1, createdAt: new Date().toISOString(), settings,
     files: Object.fromEntries(store.data.profiles.map(p => [p.id, fs.readFileSync(store.profilePath(p.id), 'utf8')])), assets };
 }
 function validateBackup(input) {
@@ -66,6 +68,8 @@ async function restoreBackup(store, input, disconnect) {
   // Machine-local executable and login registration are never copied from another machine.
   settings.customCore = previous.customCore;
   settings.launchAtLogin = previous.launchAtLogin;
+  settings.controller.secret = previous.controller?.secret || '';
+  settings.controller.enabled = false;
   await disconnect();
   try {
     if (assetNames.size) fs.mkdirSync(assetDir, { recursive: true });
@@ -198,7 +202,14 @@ function registerMaintenance(ctx) {
     const result = await dialog.showOpenDialog(getWindow(), { title: '选择 Mihomo', filters: [{ name: 'Mihomo', extensions: process.platform === 'win32' ? ['exe'] : ['*'] }], properties: ['openFile'] });
     return result.canceled ? null : installCore(result.filePaths[0]);
   }));
-  handle('core:reset', () => operation(async () => { await disconnect(); store.data.customCore = false; engine.binary = path.join(asset('core'), process.platform === 'win32' ? 'mihomo.exe' : 'mihomo'); store.save(); return { version: await coreVersion(engine.binary) }; }));
+  handle('core:reset', () => operation(async () => {
+    const target = path.join(asset('core'), process.platform === 'win32' ? 'mihomo.exe' : 'mihomo');
+    const version = await coreVersion(target); await disconnect();
+    const previous = { binary:engine.binary, custom:store.data.customCore };
+    try { store.data.customCore = false; engine.binary = target; store.save(); }
+    catch (error) { engine.binary = previous.binary; store.data.customCore = previous.custom; throw error; }
+    return { version };
+  }));
   async function checkCore(channel) {
     const release = await fetchRelease(CORE_REPO, channel, fetcher);
     const selected = coreAsset(release); const current = engine.version || await coreVersion(engine.binary).catch(() => '');

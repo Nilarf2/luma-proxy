@@ -1,5 +1,7 @@
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using YamlDotNet.RepresentationModel;
 
 static class ConfigPolicy {
@@ -49,16 +51,46 @@ static class ConfigPolicy {
     }
     static void RequireBridge(string value) { if (!Regex.IsMatch(value, @"\Ahttp://127\.0\.0\.1:[0-9]{1,5}/luma-provider/[a-f0-9]{64}/[a-f0-9]{64}\z") || !Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Port < 1 || uri.Port > 65535) throw new IOException("Proxy providers require an authenticated local bridge"); }
     static void RequireHttp(string value) { if (!Uri.TryCreate(value, UriKind.Absolute, out var u) || (u.Scheme != "http" && u.Scheme != "https") || !string.IsNullOrEmpty(u.UserInfo)) throw new IOException("Only HTTP(S) URLs without user info are allowed"); }
+    // Mihomo accepts these TLS fields as either PEM content or a file path. The
+    // privileged core must only receive content; no caller path is ever opened.
+    static string RequirePem(YamlNode node, bool privateKey) {
+        if (node is not YamlScalarNode scalar || scalar.Value is not string value || value.Length is < 32 or > 262144) throw new IOException("TLS credentials require bounded inline PEM content");
+        var remaining = value.AsSpan(); var count = 0;
+        try {
+            while (!remaining.Trim().IsEmpty) {
+                if (!PemEncoding.TryFind(remaining, out var pem) || !remaining[..pem.Location.Start.GetOffset(remaining.Length)].Trim().IsEmpty) throw new IOException("Invalid TLS PEM content");
+                var label = remaining[pem.Label].ToString();
+                if (privateKey ? label is not ("PRIVATE KEY" or "RSA PRIVATE KEY" or "EC PRIVATE KEY") : label != "CERTIFICATE") throw new IOException("TLS PEM label does not match its field");
+                if (privateKey) {
+                    if (++count != 1) throw new IOException("Only one private key is allowed");
+                    var block = remaining[pem.Location].ToString(); var imported = false;
+                    foreach (var algorithm in new AsymmetricAlgorithm[] { RSA.Create(), ECDsa.Create(), DSA.Create() }) {
+                        using (algorithm) { if (imported) continue; try { algorithm.ImportFromPem(block); imported = true; } catch (Exception e) when (e is ArgumentException or CryptographicException) { } }
+                    }
+                    if (!imported) throw new IOException("Invalid or unsupported TLS private key");
+                } else { using var certificate = new X509Certificate2(Convert.FromBase64String(remaining[pem.Base64Data].ToString())); count++; }
+                remaining = remaining[pem.Location.End.GetOffset(remaining.Length)..];
+            }
+            if (count == 0) throw new IOException("TLS PEM content is required");
+            return value;
+        } catch (Exception e) when (e is CryptographicException or ArgumentException or FormatException) { throw new IOException("Invalid TLS PEM content", e); }
+    }
     static void ValidateTree(YamlNode node, string dir, int depth, string context = "") {
         if (depth > 40) throw new IOException("Configuration nesting too deep");
-        if (node is YamlMappingNode map) foreach (var pair in map.Children) {
+        if (node is YamlMappingNode map) { foreach (var pair in map.Children) {
             var key = (pair.Key as YamlScalarNode)?.Value ?? throw new IOException("Invalid key");
-            if (key == "path" && context is not ("ws-opts" or "http-opts" or "h2-opts" or "grpc-opts")) { var value = pair.Value.ToString(); if (!value.StartsWith(Path.Combine(dir, "cache") + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) || Path.GetFullPath(value) != value) throw new IOException("File paths outside protected cache are forbidden"); }
+            if (key is "certificate" or "private-key") RequirePem(pair.Value, key == "private-key");
+            else if (key == "path" && context is not ("ws-opts" or "http-opts" or "h2-opts" or "grpc-opts")) { var value = pair.Value.ToString(); if (!value.StartsWith(Path.Combine(dir, "cache") + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) || Path.GetFullPath(value) != value) throw new IOException("File paths outside protected cache are forbidden"); }
             else if (key.Contains("file", StringComparison.OrdinalIgnoreCase) && key != "profile" && key != "find-process-mode") throw new IOException("File config options forbidden in service mode");
-            else if (key is "certificate" or "private-key-file" or "ca" or "ca-file" or "client-cert" or "client-key" or "external-ui" or "external-ui-url" or "external-controller-pipe" or "external-controller-unix" or "external-controller-tls" or "script" or "command" or "exec") throw new IOException("Privileged file/executable option forbidden");
+            else if (key is "private-key-file" or "ca" or "ca-file" or "client-cert" or "client-key" or "external-ui" or "external-ui-url" or "external-controller-pipe" or "external-controller-unix" or "external-controller-tls" or "script" or "command" or "exec") throw new IOException("Privileged file/executable option forbidden");
             // Prevent alternate path-bearing fields from becoming privileged arbitrary file access.
             else if (key.Contains("path", StringComparison.OrdinalIgnoreCase) && key is not ("path")) { if (key != "ws-path") throw new IOException("Unsupported path-bearing option"); }
             ValidateTree(pair.Value, dir, depth + 1, key);
+        }
+            if (map.Children.TryGetValue(new YamlScalarNode("certificate"), out var cert) && map.Children.TryGetValue(new YamlScalarNode("private-key"), out var privateKeyNode)) {
+                try { using var matched = X509Certificate2.CreateFromPem(((YamlScalarNode)cert).Value!, ((YamlScalarNode)privateKeyNode).Value!); }
+                catch (Exception e) when (e is CryptographicException or ArgumentException) { throw new IOException("TLS certificate and private key do not match", e); }
+            }
         } else if (node is YamlSequenceNode sequence) foreach (var child in sequence.Children) ValidateTree(child, dir, depth + 1, context);
     }
 }
@@ -67,7 +99,7 @@ static class ApiPolicy {
     public static void Validate(string endpoint, string method, JsonNode? data) {
         if (endpoint.Length > 8192 || !endpoint.StartsWith('/') || endpoint.Contains('#') || endpoint.Contains('\\') || endpoint.Contains("..")) throw new UnauthorizedAccessException("Invalid API path");
         var path = endpoint.Split('?')[0]; var decoded = Uri.UnescapeDataString(path); if (decoded.Contains("..") || decoded.Contains('\\') || decoded.Count(c => c == '/') != path.Count(c => c == '/')) throw new UnauthorizedAccessException("Encoded API path denied");
-        if (method == "GET" && (path is "/version" or "/configs" or "/proxies" or "/connections" or "/rules" or "/providers/proxies" or "/providers/rules" || Regex.IsMatch(path, @"^/(proxies|providers/proxies|providers/rules)/[^/]+(/(delay|healthcheck))?$"))) return;
+        if (method == "GET" && (path is "/version" or "/configs" or "/proxies" or "/connections" or "/rules" or "/providers/proxies" or "/providers/rules" || Regex.IsMatch(path, @"^/(proxies|providers/proxies|providers/rules)/[^/]+(/(delay|healthcheck))?$") || Regex.IsMatch(path, @"^/providers/proxies/[^/]+/[^/]+/healthcheck$"))) return;
         if (method == "DELETE" && (path == "/connections" || Regex.IsMatch(path, @"^/connections/[^/]+$"))) return;
         if (method == "PUT" && Regex.IsMatch(path, @"^/providers/(proxies|rules)/[^/]+$")) { if (data != null) throw new UnauthorizedAccessException(); return; }
         if (method == "POST" && path is "/cache/fakeip/flush" or "/cache/dns/flush" && data == null) return;

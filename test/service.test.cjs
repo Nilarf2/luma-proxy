@@ -50,3 +50,16 @@ test('service provider bridge survives denied stop and is replaced only after su
   fail = false; await client.start({ config: 'proxies: []', ownerPid: 123 }); assert.ok(events.indexOf('dispose1') > events.indexOf('startconverted3'));
   await client.stop(); assert.equal(events.at(-1), 'dispose3');
 });
+test('cancelled service API destroys pending pipe and rejects without waiting for native deadline', async () => {
+  const socket = new EventEmitter(); let destroyed = false;
+  socket.setTimeout = () => {}; socket.write = () => {}; socket.destroy = () => { destroyed = true; };
+  const client = new ServiceClient({ connect: () => { queueMicrotask(() => socket.emit('connect')); return socket; } }); client.ownerSid = async () => sid;
+  const controller = new AbortController(); const pending = client.api('/providers/proxies/p/n/healthcheck?timeout=5000', 'GET', undefined, { signal: controller.signal });
+  await new Promise(resolve => setImmediate(resolve)); controller.abort();
+  await assert.rejects(pending, { name: 'AbortError' }); assert.equal(destroyed, true);
+});
+test('already cancelled service request never connects or reads Windows identity', async () => {
+  const client = new ServiceClient({ run: () => { throw Error('must not read identity'); }, connect: () => { throw Error('must not connect'); } });
+  const controller = new AbortController(); controller.abort();
+  await assert.rejects(client.request({ action: 'status' }, { signal: controller.signal }), { name: 'AbortError' });
+});

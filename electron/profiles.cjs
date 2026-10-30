@@ -5,6 +5,7 @@ const YAML = require('yaml');
 const { normalizeDownload } = require('./download.cjs');
 const { parseProfile, parseOverride, downloadSubscription } = require('./profile.cjs');
 const { validateScript, composeProfile } = require('./compose.cjs');
+const { selectCertificatePair } = require('./certificates.cjs');
 function writeProfile(store, id, text) { const file = store.profilePath(id); fs.writeFileSync(file + '.tmp', text, { mode: 0o600 }); fs.renameSync(file + '.tmp', file); }
 function registerProfiles(ctx) {
   const { handle, store, engine, dialog, getWindow, exclusive, disconnect, connect, publish } = ctx;
@@ -28,9 +29,10 @@ function registerProfiles(ctx) {
     catch (error) { p.lastUpdateError = '更新失败，请稍后重试'; p.lastAttemptAt = new Date().toISOString(); store.save(); throw error; }
   }
   handle('profile:import', payload => exclusive(async () => {
-    if (!payload || !['url', 'file'].includes(payload.type)) throw Error('导入方式无效');
+    if (!payload || !['url', 'file', 'text'].includes(payload.type)) throw Error('导入方式无效');
     let text, url, name, usage = null, updateInterval = 0;
     if (payload.type === 'url') { if (typeof payload.url !== 'string') throw Error('请输入订阅地址'); url = payload.url.trim(); const result = await downloadSubscription(url, payload.download, engine.ready ? engine.port : undefined); ({ text, usage, updateInterval } = result); name = '我的订阅'; }
+    else if (payload.type === 'text') { text = payload.text; name = '本地配置'; }
     else { const result = await dialog.showOpenDialog(getWindow(), { title: '导入配置', filters: [{ name: 'YAML', extensions: ['yaml', 'yml'] }], properties: ['openFile'] }); if (result.canceled) return; if (fs.statSync(result.filePaths[0]).size > 8 * 1024 * 1024) throw Error('配置不能超过 8 MB'); text = fs.readFileSync(result.filePaths[0], 'utf8'); name = path.basename(result.filePaths[0]).replace(/\.ya?ml$/i, ''); }
     parseProfile(text); const id = crypto.randomUUID();
     const profile = { id, name: String(payload.name || name).slice(0, 80), url, updatedAt: new Date().toISOString(), usage, updateInterval, download: normalizeDownload(payload.download), override: '' };
@@ -61,6 +63,15 @@ function registerProfiles(ctx) {
   handle('profile:structured:get', id => { const c = parseProfile(fs.readFileSync(store.profilePath(find(id).id), 'utf8')); return { rules: c.rules || [], proxies: c.proxies || [], groups: c['proxy-groups'] || [] }; });
   handle('profile:structured:apply', payload => exclusive(async () => { const p = find(payload?.id); if (!Array.isArray(payload.rules) || payload.rules.some(v => typeof v !== 'string') || !Array.isArray(payload.proxies) || !Array.isArray(payload.groups) || [...payload.proxies, ...payload.groups].some(v => !v || typeof v !== 'object' || Array.isArray(v) || typeof v.name !== 'string' || !v.name.trim())) throw Error('可视配置格式无效'); for (const values of [payload.proxies,payload.groups]) if (new Set(values.map(v=>v.name)).size !== values.length) throw Error('名称不能重复'); const c = parseProfile(fs.readFileSync(store.profilePath(p.id), 'utf8')); Object.assign(c, {rules:payload.rules, proxies:payload.proxies, 'proxy-groups':payload.groups}); await edit({id:p.id,text:YAML.stringify(c)}); }));
   handle('profile:edit', payload => exclusive(() => edit(payload)));
+  handle('profile:certificate:import', payload => exclusive(async () => {
+    const p = find(payload?.id), document = parseProfile(fs.readFileSync(store.profilePath(p.id), 'utf8'));
+    if (typeof payload?.node !== 'string') throw Error('请选择此配置中的节点');
+    const nodes = (document.proxies || []).filter(node => node?.name === payload.node);
+    if (nodes.length !== 1) throw Error('请选择此配置中的唯一节点');
+    const pair = await selectCertificatePair(dialog, getWindow()); if (!pair) return { canceled: true };
+    Object.assign(nodes[0], pair);
+    await edit({ id: p.id, text: YAML.stringify(document) }); return { imported: true };
+  }));
   handle('profile:export', id => exclusive(async () => { const p = find(id); const result = await dialog.showSaveDialog(getWindow(), { title: '导出配置', defaultPath: p.name.replace(/[<>:"/\\|?*]/g, '_') + '.yaml', filters: [{ name: 'YAML', extensions: ['yaml'] }] }); if (!result.canceled && result.filePath) fs.writeFileSync(result.filePath, fs.readFileSync(store.profilePath(id)), { mode: 0o600 }); }));
   handle('profile:provider:import', payload => exclusive(async () => {
     const p = find(payload?.id); const section = payload?.type === 'proxies' ? 'proxy-providers' : payload?.type === 'rules' ? 'rule-providers' : null;

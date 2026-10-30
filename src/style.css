@@ -12,3 +12,5 @@ button,input,select,textarea{transition:background-color 140ms,border-color 140m
 .group-list strong{display:flex;align-items:center;gap:8px}.group-icon,.tray-preview{width:18px;height:18px;object-fit:contain;flex-shrink:0}.group-icon-options{margin:0 0 20px;padding-top:0}.group-icon-options[open]{padding-bottom:12px}.group-icon-options[open] summary{margin-bottom:8px}
 
 .importing-drop main{outline:2px solid var(--accent);outline-offset:-10px}.importing-drop .modal{outline:2px solid var(--accent);outline-offset:4px}.settings-details .setting-control select{max-width:100%}.settings-details>.setting-row{margin-top:8px}
+
+.node-entry{display:flex;align-items:center;border-bottom:1px solid var(--line);gap:8px}.node-entry .node-row{border-bottom:0;min-width:0;flex:1}.node-test{flex-shrink:0;margin-right:4px}

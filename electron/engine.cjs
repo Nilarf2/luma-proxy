@@ -4,13 +4,16 @@ const path = require('node:path');
 const net = require('node:net');
 const crypto = require('node:crypto');
 const { runtimeConfig } = require('./profile.cjs');
+const { groupsWithSources } = require('./nodes.cjs');
 const wait = ms => new Promise(r => setTimeout(r, ms));
 async function freePort() { return new Promise((resolve, reject) => { const s = net.createServer(); s.once('error', reject); s.listen(0, '127.0.0.1', () => { const port = s.address().port; s.close(() => resolve(port)); }); }); }
 class Engine {
   constructor(dir, binary, onExit) { this.dir = dir; this.binary = binary; this.onExit = onExit; this.child = null; this.ready = false; this.tunRunning = false; this.logs = []; }
-  async api(endpoint, method = 'GET', data) {
-    if (this.serviceMode) return this.serviceRunner.api(endpoint, method, data);
-    const res = await fetch(`http://127.0.0.1:${this.controller}${endpoint}`, { method, headers: { Authorization: `Bearer ${this.secret}`, 'Content-Type': 'application/json' }, body: data === undefined ? undefined : JSON.stringify(data), signal: AbortSignal.timeout(endpoint.includes('/delay') ? Math.min(35000, Math.max(5000, Number(new URL(endpoint, 'http://localhost').searchParams.get('timeout')) + 2000 || 12000)) : 5000) });
+  async api(endpoint, method = 'GET', data, options = {}) {
+    if (this.serviceMode) return this.serviceRunner.api(endpoint, method, data, options);
+    const delay = /\/(delay|healthcheck)\?/.test(endpoint);
+    const timeout = AbortSignal.timeout(delay ? Math.min(35000, Math.max(5000, Number(new URL(endpoint, 'http://localhost').searchParams.get('timeout')) + 2000 || 12000)) : 5000);
+    const res = await fetch(`http://127.0.0.1:${this.controller}${endpoint}`, { method, headers: { Authorization: `Bearer ${this.secret}`, 'Content-Type': 'application/json' }, body: data === undefined ? undefined : JSON.stringify(data), signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout });
     if (!res.ok) throw Error(`内核请求失败（${res.status}）`); return res.status === 204 ? null : res.json();
   }
   async start(text, mode, settings = {}, profileOverride = '') {
@@ -21,6 +24,8 @@ class Engine {
     fs.mkdirSync(this.dir, { recursive: true });
     const compiled = runtimeConfig(text, this.port, this.controller, this.secret, mode, settings, profileOverride);
     const expected = require('yaml').parse(compiled);
+    this.groupDefinitions = expected['proxy-groups'] || [];
+    this.localProxyNames = (expected.proxies || []).map(proxy => proxy.name);
     const expectedNames = [...(expected.proxies || []), ...(expected['proxy-groups'] || [])].map(value => value.name);
     const verify = async () => { const version = await this.api('/version'); const current = await this.api('/configs'); if (current['mixed-port'] !== this.port || current.mode !== mode || !!current.tun?.enable !== !!settings.core?.tun?.enabled) throw Error('内核配置尚未就绪'); const proxies = await this.api('/proxies'); if (expectedNames.some(name => !proxies.proxies?.[name])) throw Error('策略组尚未就绪'); return version; };
     const config = path.join(this.dir, 'runtime.yaml'); fs.writeFileSync(config, compiled, { mode: 0o600 });
@@ -71,9 +76,9 @@ class Engine {
   }
   async stats() {
     if (!this.ready) return { upload: 0, download: 0, connections: [], groups: [] };
-    const [p, c] = await Promise.all([this.api('/proxies'), this.api('/connections')]);
+    const [p, c, sources] = await Promise.all([this.api('/proxies'), this.api('/connections'), this.api('/providers/proxies')]);
     if (this.serviceMode) this.logs = (await this.serviceRunner.logs()).slice(-500);
-    return { upload: c.uploadTotal, download: c.downloadTotal, connections: (c.connections || []).map(x => ({ id: x.id, host: x.metadata.host || x.metadata.destinationIP, process: x.metadata.process || '', rule: x.rule, rulePayload: x.rulePayload, start: x.start, metadata: x.metadata, chains: x.chains, upload: x.upload, download: x.download })), groups: Object.values(p.proxies).filter(x => Array.isArray(x.all)).map(x => ({ name: x.name, type: x.type, now: x.now, nodes: x.all.map(name => ({ name, type: p.proxies[name]?.type, delay: p.proxies[name]?.history?.at(-1)?.delay || 0 })) })) };
+    return { upload: c.uploadTotal, download: c.downloadTotal, connections: (c.connections || []).map(x => ({ id: x.id, host: x.metadata.host || x.metadata.destinationIP, process: x.metadata.process || '', rule: x.rule, rulePayload: x.rulePayload, start: x.start, metadata: x.metadata, chains: x.chains, upload: x.upload, download: x.download })), groups: groupsWithSources(p.proxies, sources.providers, this.groupDefinitions, this.localProxyNames) };
   }
 }
 module.exports = { Engine, freePort };

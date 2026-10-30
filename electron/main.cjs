@@ -5,20 +5,22 @@ const { startWatchdog, checkWatchdog } = require('./watchdog.cjs');
 const { Diagnostics } = require('./diagnostics.cjs');
 const { Store } = require('./store.cjs');
 const { Engine } = require('./engine.cjs');
+const { DelayTasks } = require('./delay.cjs');
 const { parseOverride } = require('./profile.cjs');
 const { validateSettingsPatch } = require('./settings.cjs');
 const { registerProfiles } = require('./profiles.cjs');
 const { registerMedia } = require('./media.cjs');
 const { registerIcons } = require('./icons.cjs');
+const { registerController } = require('./controller.cjs');
 const { memorySampler } = require('./memory.cjs');
 const { isAdministrator, elevate } = require('./privilege.cjs');
 const { prepareProfile, providerFiles } = require('./compose.cjs');
-const { ServiceClient } = require('./service.cjs');
+const { ServiceClient, coreDigest } = require('./service.cjs');
 const { PacServer, pacScript } = require('./pac.cjs');
 const { registerMaintenance } = require('./maintenance.cjs');
 const { registerIntegrations } = require('./integrations.cjs');
 const { WindowsProxy, ps } = require('./windows-proxy.cjs');
-let win, windowTask, sampleMemory, media, icons, trayImageKey, tray, store, engine, proxy, diagnostics, maintenance, integrations, profiles, pac, recoveryBinary, quitting = false, busy = false, lastError = '', recoveryHandle = null, recoveryTask = null, admin = false, privilegeReady, service = null, serviceStatus = { installed: false, running: false };
+let win, windowTask, sampleMemory, delayTasks, media, icons, controller, trayImageKey, tray, store, engine, proxy, diagnostics, maintenance, integrations, profiles, pac, recoveryBinary, quitting = false, busy = false, lastError = '', recoveryHandle = null, recoveryTask = null, admin = false, privilegeReady, service = null, serviceStatus = { installed: false, running: false };
 async function ensureRecovery() {
   if (quitting) throw Error('Luma 正在退出');
   if (recoveryTask) return recoveryTask;
@@ -40,10 +42,11 @@ if (!app.requestSingleInstanceLock()) app.quit();
 app.on('second-instance', () => { if (store) showWindow().catch(() => {}); });
 app.on('activate', () => { if (store) showWindow().catch(() => {}); });
 const asset = name => app.isPackaged ? path.join(process.resourcesPath, name) : path.join(__dirname, '..', 'resources', name);
-const snapshot = () => ({ ...store.publicData(), ...maintenance?.snapshot(), ...integrations?.snapshot(), ...icons?.snapshot(), running: engine.ready, systemProxy: proxy.enabled, busy, lastError, port: engine.ready ? engine.port : null, version: app.getVersion(), health: diagnostics.state, tunRunning: engine.tunRunning, privilege: { admin, platform: process.platform }, service: serviceStatus, coreVersion: engine.version || null });
+const snapshot = () => ({ ...store.publicData(), ...maintenance?.snapshot(), ...integrations?.snapshot(), ...icons?.snapshot(), ...controller?.snapshot(), running: engine.ready, systemProxy: proxy.enabled, busy, lastError, port: engine.ready ? engine.port : null, version: app.getVersion(), health: diagnostics.state, tunRunning: engine.tunRunning, privilege: { admin, platform: process.platform }, service: serviceStatus, coreVersion: engine.version || null });
 function publish() { if (quitting) return; if (win && !win.isDestroyed()) win.webContents.send('state', snapshot()); updateTray(); }
 async function exclusive(fn) { if (busy) throw Error('正在处理上一项操作，请稍候'); busy = true; publish(); try { lastError = ''; return await fn(); } catch(e) { lastError = e.message; throw e; } finally { busy = false; publish(); } }
 async function disconnect() {
+  delayTasks?.cancel();
   media?.dispose();
   let failure;
   try { await proxy.restore(); } catch (error) { failure = error; }
@@ -61,7 +64,7 @@ async function connect() {
     if (!admin && !serviceStatus.running) throw Error('TUN 需要管理员权限，请安装服务或以管理员身份重启');
   }
   const useService = !!store.data.core.tun.enabled && !admin && serviceStatus.running;
-  if (useService && store.data.customCore) throw Error('服务使用受保护的内置内核。请切回内置内核，或以管理员身份运行自定义内核');
+  if (useService && serviceStatus.coreSha256 !== coreDigest(engine.binary)) throw Error('服务内核与当前内核不一致，请在设置中同步服务内核');
   engine.service = useService ? service : null;
   await ensureRecovery();
   const compiled = await prepareProfile(store, profile.id);
@@ -91,10 +94,19 @@ async function updateSettings(payload) {
   store.data = next;
   try {
     await integrations?.applySettings(next);
+    await controller?.applySettings(next);
     if (typeof payload?.launchAtLogin === 'boolean') app.setLoginItemSettings({ openAtLogin: payload.launchAtLogin });
     if (restart) await connect();
     store.save();
-  } catch (error) { store.data = previous; await integrations?.applySettings(previous).catch(() => {}); if (restart) await connect().catch(() => {}); throw error; }
+  } catch (error) { store.data = previous; let rollbackError; try { store.save(); } catch (failure) { rollbackError = failure; } await integrations?.applySettings(previous).catch(() => {}); await controller?.applySettings(previous).catch(() => {}); if (engine.ready && payload.mode !== undefined) await engine.api('/configs','PATCH',{mode:previous.mode}).catch(()=>{}); if (restart) await connect().catch(() => {}); throw rollbackError || error; }
+}
+async function controllerMutation(patch) {
+  return exclusive(async () => {
+    const previous = store.data.mode;
+    if (patch.mode && engine.ready) await engine.api('/configs','PATCH',{mode:patch.mode});
+    try { await updateSettings(patch); }
+    catch (error) { if (engine.ready) await engine.api('/configs','PATCH',{mode:previous}).catch(()=>{}); throw error; }
+  });
 }
 function updateTray() {
   if (!tray) return;
@@ -109,7 +121,7 @@ function updateTray() {
     {label:'TUN',type:'checkbox',checked:store.data.core.tun.enabled,enabled:!busy,click:item=>exclusive(()=>updateSettings({core:{tun:{enabled:item.checked}}})).catch(()=>publish())},
     {label:'代理模式',submenu:[['rule','规则'],['global','全局'],['direct','直连']].map(([mode,label])=>({label,type:'radio',checked:store.data.mode===mode,enabled:!busy,click:action(async()=>{if(engine.ready)await engine.api('/configs','PATCH',{mode});store.data.mode=mode;store.save();})}))},
     ...(groups.length?[{label:'策略组',submenu:groups}]:[]),
-    {label:'测试延迟',enabled:engine.ready&&!busy,click:action(async()=>{for(const group of engine.lastGroups||[])await engine.api(`/proxies/${encodeURIComponent(group.name)}/delay?timeout=${store.data.latency.timeout}&url=${encodeURIComponent(store.data.latency.url)}`).catch(()=>{});})},
+    {label:'测试延迟',enabled:engine.ready&&!busy,click:action(async()=>{for(const group of engine.lastGroups||[]) { if (!engine.ready || quitting) break; await delayTasks.run(group.name).catch(()=>{}); }})},
     {type:'separator'},{label:'退出 Luma',click:()=>app.quit()}
   ]));
 }
@@ -151,6 +163,7 @@ app.whenReady().then(async () => {
   icons = registerIcons({handle,dialog,getWindow:()=>win,store,publish,nativeImage});
   sampleMemory = memorySampler({app,getWindow:()=>win,getCorePid:()=>engine.child?.pid});
   diagnostics = new Diagnostics({ platform: process.platform, binary: engine.binary, ensureRecovery, inspectProxy: () => proxy.inspect(), getLoginSettings: () => app.getLoginItemSettings(), launchAtLogin: () => store.data.launchAtLogin, portable: !!process.env.PORTABLE_EXECUTABLE_DIR, onChange: publish });
+  controller = registerController({handle,store,engine,dialog,getWindow:()=>win,shell,publish,mutate:controllerMutation,memory:()=>sampleMemory()});
   handle('state', snapshot);
   handle('health:check', () => { diagnostics.options.binary = engine.binary; return diagnostics.run(); });
   handle('toggle', () => exclusive(() => engine.ready ? disconnect() : connect()));
@@ -161,8 +174,10 @@ app.whenReady().then(async () => {
   handle('systemProxy', enabled => exclusive(async () => { if (typeof enabled !== 'boolean') throw Error('参数无效'); if (enabled) { await ensureRecovery(); if (!engine.ready) throw Error('请先连接'); const pacUrl = store.data.core.proxyMode === 'pac' ? await pac.start(engine.port, store.data.core.pacScript) : undefined; await proxy.enable(engine.port, engine.serviceMode ? undefined : engine.child?.pid, store.data.core.bypass, {pacUrl}); } else { await proxy.restore(); await pac.stop(); } }));
   handle('stats', async () => { const result = await engine.stats(); result.memory = await sampleMemory(); if (JSON.stringify(engine.lastGroups) !== JSON.stringify(result.groups)) { engine.lastGroups = result.groups; updateTray(); } return result; });
   handle('node:select', async ({ group, name }) => { if (!engine.ready) throw Error('请先连接'); const data = await engine.api('/proxies'); if (data.proxies[group]?.type !== 'Selector' || !data.proxies[group].all.includes(name)) throw Error('此策略组不支持手动切换'); await engine.api(`/proxies/${encodeURIComponent(group)}`, 'PUT', { name }); });
-  async function delayNode(payload) { const value = typeof payload === 'string' ? { name: payload } : payload; if (!engine.ready || typeof value?.name !== 'string' || value.name.length > 1024) throw Error('请先连接'); const checked = validateSettingsPatch(store.data, {latency:{url:value.url ?? store.data.latency.url, timeout:value.timeout ?? store.data.latency.timeout}}).latency; return engine.api(`/proxies/${encodeURIComponent(value.name)}/delay?timeout=${checked.timeout}&url=${encodeURIComponent(checked.url)}`); }
+  delayTasks = new DelayTasks({engine,settings:()=>store.data});
+  const delayNode = payload => delayTasks.run(payload);
   handle('node:delay', delayNode);
+  handle('node:delay:cancel', payload => delayTasks.cancel(payload));
   let lastLatencyAt = Date.now(); const latencyTimer = setInterval(async () => { const interval = store.data.latency.intervalMinutes; if (quitting || busy || !engine.ready || interval <= 0 || Date.now() - lastLatencyAt < interval * 60000) return; lastLatencyAt = Date.now(); try { const values = await engine.api('/proxies'); for (const value of Object.values(values.proxies || {})) { if (!engine.ready || quitting) break; if (Array.isArray(value.all)) await delayNode(value.name).catch(() => {}); } } catch {} }, 30000); latencyTimer.unref(); app.once('will-quit',()=>clearInterval(latencyTimer));
   handle('connections:clear', () => engine.ready ? engine.api('/connections', 'DELETE') : null);
   handle('logs', () => engine.logs);
@@ -179,10 +194,19 @@ app.whenReady().then(async () => {
   handle('service:status', async () => { if (service) serviceStatus = await service.status(); return serviceStatus; });
   handle('service:install', () => exclusive(async () => { if (!service) throw Error('当前平台不支持服务'); await service.install(); serviceStatus = await service.status(); }));
   handle('service:uninstall', () => exclusive(async () => { if (!service) throw Error('当前平台不支持服务'); await disconnect(); await service.uninstall(); serviceStatus = await service.status(); }));
+  handle('service:sync-core', () => exclusive(async () => {
+    if (!service) throw Error('当前平台不支持服务');
+    serviceStatus = await service.status(); if (!serviceStatus.installed) throw Error('请先安装服务');
+    const digest = coreDigest(engine.binary);
+    const choice = await dialog.showMessageBox(win, { type:'question', message:'同步服务内核？', detail:`此文件将获得管理员网络权限。\n${engine.binary}\nSHA-256: ${digest}`, buttons:['取消','同步'], defaultId:0, cancelId:0 });
+    if (choice.response !== 1) return null;
+    await disconnect(); await service.syncCore(engine.binary, digest); serviceStatus = await service.status(); return serviceStatus;
+  }));
   handle('window', action => { if (action === 'minimize') win.minimize(); else if (action === 'maximize') win.isMaximized() ? win.unmaximize() : win.maximize(); else if (action === 'close') win.close(); else if (action === 'quit') app.quit(); });
-  maintenance = registerMaintenance({ handle, app, dialog, shell, getWindow: () => win, store, engine, exclusive, disconnect, publish, asset, isBusy:()=>busy, isQuitting:()=>quitting, applySettings:()=>integrations?.applySettings(store.data) });
+  maintenance = registerMaintenance({ handle, app, dialog, shell, getWindow: () => win, store, engine, exclusive, disconnect, publish, asset, isBusy:()=>busy, isQuitting:()=>quitting, applySettings:async()=>{await integrations?.applySettings(store.data);await controller?.applySettings(store.data);} });
   integrations = registerIntegrations({ handle, app, dialog, shell, globalShortcut, Notification, getWindow: () => win, showWindow, store, engine, proxy, exclusive, connect, disconnect, publish, importUrl: (url, name) => profiles.importUrl(url, name), toggleTun: enabled => updateSettings({ core: { tun: { enabled } } }), isBusy: () => busy, isQuitting: () => quitting });
   await integrations.applySettings(store.data).catch(error => { lastError = error.message; });
+  await controller.applySettings(store.data).catch(error => { lastError = error.message; });
   privilegeReady = isAdministrator().then(value => { admin = value; }).catch(() => { admin = false; });
   tray = new Tray(nativeImage.createFromPath(asset('icon.png')).resize({ width: 24, height: 24 })); tray.on('double-click', () => showWindow().catch(() => {})); updateTray(); await ensureWindow(true);
   await privilegeReady;
@@ -191,5 +215,5 @@ app.whenReady().then(async () => {
   if (store.data.startupCheck) diagnostics.run().catch(() => {});
   if (store.data.autoConnect && store.data.activeId) exclusive(connect).catch(() => {});
 }).catch(err => { dialog.showErrorBox('Luma 启动失败', err.message); app.exit(1); });
-app.on('before-quit', event => { if (quitting) return; event.preventDefault(); if (busy) { showWindow().catch(() => {}); return; } quitting = true; media?.dispose(); profiles?.dispose(); maintenance?.dispose(); integrations?.dispose(); (async () => { try { await disconnect(); } catch(e) { dialog.showErrorBox('请检查系统代理', '无法自动恢复 Windows 代理设置，请在系统设置中关闭代理后退出。'); } finally { await recoveryTask?.catch(() => {}); app.quit(); } })(); });
+app.on('before-quit', event => { if (quitting) return; event.preventDefault(); if (busy) { showWindow().catch(() => {}); return; } quitting = true; delayTasks?.cancel(); media?.dispose(); profiles?.dispose(); maintenance?.dispose(); integrations?.dispose(); (async () => { try { try { await controller?.dispose(); } catch {} await disconnect(); } catch(e) { dialog.showErrorBox('请检查系统代理', '无法自动恢复 Windows 代理设置，请在系统设置中关闭代理后退出。'); } finally { await recoveryTask?.catch(() => {}); app.quit(); } })(); });
 app.on('window-all-closed', () => { if (!tray) app.quit(); });

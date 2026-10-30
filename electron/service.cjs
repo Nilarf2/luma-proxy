@@ -27,11 +27,14 @@ class ServiceClient {
     if (!this.sid) { const { stdout } = await this.run('whoami.exe', ['/user', '/fo', 'csv', '/nh'], { windowsHide: true, timeout: 10000, maxBuffer: 8192 }); const match = String(stdout).match(/S-1-5-21-\d+-\d+-\d+-\d+/); if (!match || !SID.test(match[0])) throw Error('无法读取 Windows 用户标识'); this.sid = match[0]; }
     return this.sid;
   }
-  async request(request) {
-    validateRequest(request); const sid = await this.ownerSid(); const message = JSON.stringify(request) + '\n';
+  async request(request, { signal } = {}) {
+    validateRequest(request); const cancelled = () => Object.assign(Error('操作已取消'), { name: 'AbortError' });
+    if (signal?.aborted) throw cancelled(); const sid = await this.ownerSid(); if (signal?.aborted) throw cancelled(); const message = JSON.stringify(request) + '\n';
     return new Promise((resolve, reject) => {
       const socket = this.connect(`\\\\.\\pipe\\Luma.Proxy.${sid}`); const decoder = new StringDecoder('utf8'); let output = '', size = 0, settled = false;
-      const finish = (error, result, received = false) => { if (settled) return; settled = true; if (received) { socket.end('\n'); socket.setTimeout(1000, () => socket.destroy()); } else socket.destroy(); error ? reject(error) : resolve(result); };
+      const abort = () => finish(cancelled());
+      const finish = (error, result, received = false) => { if (settled) return; settled = true; signal?.removeEventListener('abort', abort); if (received) { socket.end('\n'); socket.setTimeout(1000, () => socket.destroy()); } else socket.destroy(); error ? reject(error) : resolve(result); };
+      signal?.addEventListener('abort', abort, { once: true });
       socket.setTimeout(35000, () => finish(Error('服务响应超时'))); socket.on('error', error => finish(error)); socket.on('connect', () => socket.write(message));
       socket.on('data', bytes => { size += bytes.length; output += decoder.write(bytes); if (size > 12 * 1024 * 1024) return finish(Error('服务响应过大')); const index = output.indexOf('\n'); if (index < 0) return; try { const result = JSON.parse(output.slice(0, index)); if (result.ok !== true) return finish(Error(result.error || '服务请求失败'), null, true); finish(null, result.data, true); } catch { finish(Error('服务响应无效')); } });
       socket.on('end', () => { if (!settled) finish(Error('服务连接意外关闭')); });
@@ -65,6 +68,6 @@ class ServiceClient {
   }
   async stop() { const result = await this.request({ action: 'stop' }); await this.providerBridge?.dispose(); this.providerBridge = null; return result; }
   logs() { return this.request({ action: 'logs' }); }
-  api(endpoint, method = 'GET', data) { return this.request({ action: 'api', endpoint, method, ...(data === undefined ? {} : { data }) }); }
+  api(endpoint, method = 'GET', data, options = {}) { return this.request({ action: 'api', endpoint, method, ...(data === undefined ? {} : { data }) }, options); }
 }
 module.exports = { ServiceClient, validateRequest, psLiteral, coreDigest };

@@ -1,4 +1,6 @@
 using System.Text.Json.Nodes;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using YamlDotNet.RepresentationModel;
 var passed = 0;
 void Check(string name, Action action) { action(); Console.WriteLine("PASS " + name); passed++; }
@@ -25,8 +27,21 @@ try {
     Check("provider arbitrary root rejected", () => Denied(() => ConfigPolicy.ProviderContent("proxies: []\nexternal-controller: 0.0.0.0:1", dir)));
     Check("provider normal WebSocket path retained", () => ConfigPolicy.ProviderContent("proxies: [{name: x, type: vless, ws-opts: {path: /transport}}]", dir));
     Check("inline certificate path rejected", () => Denied(() => ConfigPolicy.Rewrite("proxies: [{type: http, certificate: C:/Windows/secrets}]", dir, 1, "x")));
+    using var tlsKey = RSA.Create(2048);
+    using var tlsCert = new CertificateRequest("CN=Luma Fixture", tlsKey, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1).CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+    string TlsYaml(string cert, string key) { var root = new YamlMappingNode { { "proxies", new YamlSequenceNode(new YamlMappingNode { { "name", "fixture" }, { "type", "http" }, { "certificate", new YamlScalarNode(cert) }, { "private-key", new YamlScalarNode(key) } }) } }; using var output = new StringWriter(); new YamlStream(new YamlDocument(root)).Save(output, false); return output.ToString(); }
+    var tlsYaml = TlsYaml(tlsCert.ExportCertificatePem(), tlsKey.ExportPkcs8PrivateKeyPem());
+    Check("inline TLS client certificate and private key accepted", () => ConfigPolicy.Rewrite(tlsYaml, dir, 1, "x"));
+    Check("provider inline TLS credentials accepted", () => ConfigPolicy.ProviderContent(tlsYaml, dir));
+    Check("TLS private key file path denied in root and providers", () => { var value = TlsYaml(tlsCert.ExportCertificatePem(), "C:/Windows/secrets"); Denied(() => ConfigPolicy.Rewrite(value, dir, 1, "x")); Denied(() => ConfigPolicy.ProviderContent(value, dir)); });
+    Check("TLS mismatched PEM labels denied", () => Denied(() => ConfigPolicy.Rewrite(TlsYaml(tlsKey.ExportPkcs8PrivateKeyPem(), tlsCert.ExportCertificatePem()), dir, 1, "x")));
+    Check("TLS malformed PEM and trailing paths denied", () => { foreach (var value in new[] { "-----BEGIN CERTIFICATE-----\nYmFk\n-----END CERTIFICATE-----", tlsCert.ExportCertificatePem() + "\nC:/Windows/secrets" }) Denied(() => ConfigPolicy.ProviderContent(TlsYaml(value, tlsKey.ExportPkcs8PrivateKeyPem()), dir)); });
+    Check("TLS mismatched client key denied", () => { using var other = RSA.Create(2048); Denied(() => ConfigPolicy.Rewrite(TlsYaml(tlsCert.ExportCertificatePem(), other.ExportPkcs8PrivateKeyPem()), dir, 1, "x")); });
+    Check("TLS nested provider key paths denied", () => Denied(() => ConfigPolicy.ProviderContent("proxies: [{name: x, type: http, opts: {private-key: C:/Windows/secrets}}]", dir)));
     Check("file references nested deeply rejected", () => Denied(() => ConfigPolicy.Rewrite("proxies: [{type: x, opts: {private-key-file: C:/secret}}]", dir, 1, "x")));
     Check("normal read endpoints allowed", () => { foreach (var p in new[] { "/version", "/configs", "/proxies", "/connections", "/rules", "/providers/proxies/p", "/proxies/p/delay?url=http%3A%2F%2F127.0.0.1" }) ApiPolicy.Validate(p, "GET", null); });
+    Check("provider-specific node healthcheck allowed", () => ApiPolicy.Validate("/providers/proxies/Provider%20A/Node%20A/healthcheck?timeout=5000&url=http%3A%2F%2F127.0.0.1", "GET", null));
+    Check("provider-specific mutation and encoded separator denied", () => { Denied(() => ApiPolicy.Validate("/providers/proxies/p/n/healthcheck", "POST", null)); Denied(() => ApiPolicy.Validate("/providers/proxies/p/a%2fb/healthcheck", "GET", null)); });
     Check("controller reload denied", () => Denied(() => ApiPolicy.Validate("/configs", "PUT", JsonNode.Parse("{\"path\":\"C:/secret\"}"))));
     Check("controller upgrade denied", () => Denied(() => ApiPolicy.Validate("/upgrade", "POST", null)));
     Check("controller restart denied", () => Denied(() => ApiPolicy.Validate("/restart", "POST", null)));
