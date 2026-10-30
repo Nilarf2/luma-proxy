@@ -1,0 +1,40 @@
+name: Windows release
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm test
+      - run: npm run core:win
+      - run: npm run dist:win
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Verify PE and record checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem release/*.exe | ForEach-Object {
+            $bytes = [IO.File]::ReadAllBytes($_.FullName)
+            if ($bytes[0] -ne 77 -or $bytes[1] -ne 90) { throw 'Invalid EXE' }
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hash  $($_.Name)" | Out-File -Append -Encoding ascii release/SHA256SUMS.txt
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Luma-Windows-x64
+          path: |
+            release/*.exe
+            release/SHA256SUMS.txt
+          retention-days: 30

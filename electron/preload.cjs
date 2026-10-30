@@ -1,0 +1,3 @@
+const { contextBridge, ipcRenderer } = require('electron');
+const channels = new Set(['state','toggle','profile:import','profile:select','profile:update','profile:delete','mode','systemProxy','stats','node:select','node:delay','connections:clear','logs','settings','window']);
+contextBridge.exposeInMainWorld('luma', { invoke: async (channel, payload) => { if (!channels.has(channel)) throw Error('未知操作'); const result = await ipcRenderer.invoke(channel, payload); if (!result.ok) throw Error(result.error); return result.data; }, onState: callback => { const fn = (_, state) => callback(state); ipcRenderer.on('state', fn); return () => ipcRenderer.removeListener('state', fn); } });

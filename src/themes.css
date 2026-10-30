@@ -1,0 +1,2 @@
+/* Themes are semantic tokens; additional palettes need no component changes. */
+:root,[data-theme="porcelain"]{--canvas:#fafaf9;--surface:#fff;--sidebar:#f3f4f1;--text:#303a34;--muted:#7e8881;--faint:#9ba39c;--line:#ebede8;--accent:#527756}
