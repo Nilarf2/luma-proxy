@@ -22,11 +22,16 @@ try{
  await page.getByRole('button',{name:'断开连接'}).click();await page.getByText('当前未连接',{exact:true}).waitFor();assert.deepEqual(registry(),before);
  await page.getByRole('button',{name:'开启连接'}).click();await page.getByText('安全连接已开启').waitFor();assert.deepEqual(errors,[]);
  await page.evaluate(()=>window.luma.invoke('settings',{closeToTray:false}));const closed=app.waitForEvent('close');await page.getByRole('button',{name:'关闭',exact:true}).click();await closed;app=null;assert.deepEqual(registry(),before);console.log('Graceful exit proxy restoration passed');
- app=await electron.launch({executablePath:path.resolve('release/win-unpacked/Luma.exe'),args:[`--user-data-dir=${path.join(dir,'data')}`],timeout:60000});
+ app=await electron.launch({executablePath:path.resolve('release/win-unpacked/Luma.exe'),args:[`--user-data-dir=${path.join(dir,'data')}`],env:{...process.env,LUMA_TEST_WATCHDOG:'native'},timeout:60000});
  const crashPage=await app.firstWindow();await crashPage.getByRole('button',{name:'开启连接'}).click();await crashPage.getByText('安全连接已开启').waitFor({timeout:60000});
+ const launch=JSON.parse(await fs.readFile(path.join(dir,'data','watchdog-launch.json'),'utf8'));assert.equal(launch.method,'native');
  const mainPid=await app.evaluate(()=>process.pid);console.log('Forced termination: actual main PID',mainPid,'launcher PID',app.process().pid);console.log(execFileSync('taskkill.exe',['/PID',String(mainPid),'/F'],{encoding:'utf8'}));app=null;
  for(let i=0;i<20;i++){try{assert.deepEqual(registry(),before);break;}catch{if(i===19)throw Error('Watchdog did not restore system proxy');await new Promise(r=>setTimeout(r,1000));}}
- console.log('Windows packaged EXE passed: real import, bundled kernel, system proxy, HTTP forwarding, disconnect restore, exit restore, forced termination recovery, no renderer errors');
+ app=await electron.launch({executablePath:path.resolve('release/win-unpacked/Luma.exe'),args:[`--user-data-dir=${path.join(dir,'data')}`],env:{...process.env,LUMA_TEST_WATCHDOG:'unavailable'},timeout:60000});
+ const degraded=await app.firstWindow();await degraded.getByRole('button',{name:'开启连接'}).waitFor();
+ const blocked=await degraded.evaluate(async()=>{try{await window.luma.invoke('toggle');return '';}catch(error){return error.message;}});assert.match(blocked,/异常退出保护/);assert.deepEqual(registry(),before);
+ assert.equal((await degraded.evaluate(()=>window.luma.invoke('state'))).running,false);await app.close();app=null;
+ console.log('Windows packaged EXE passed: real import, bundled kernel, system proxy, HTTP forwarding, disconnect restore, exit restore, native fallback forced termination recovery, unavailable protection opens UI and safely rejects proxy activation, no renderer errors');
 }catch(error){failed=true;console.error('WINDOWS_ACCEPTANCE_FAILURE',error);for(const f of ['proxy-recovery.json','proxy-recovery.json.watchdog.log','watchdog-output.log','watchdog-launch.json']){try{console.log(f,await fs.readFile(path.join(dir,'data',f),'utf8'));}catch{}}console.log('Current registry',registry());}finally{if(app)await Promise.race([app.close().catch(()=>{}),new Promise(r=>setTimeout(r,5000))]);local.close();await fs.rm(dir,{recursive:true,force:true,maxRetries:2,retryDelay:300}).catch(e=>console.warn('Temporary test data remains locked:',e.code));}
 
 process.exit(failed?1:0);

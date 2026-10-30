@@ -46,3 +46,11 @@ test('enable preserves a stale journal when recovery fails and allows a retry', 
     fs.rmSync(dir, { force: true, recursive: true });
   }
 });
+
+test('PowerShell errors decode CLIXML without exposing encoded commands', () => {
+  const { powershellError } = require('../electron/windows-proxy.cjs');
+  const stderr = '#< CLIXML\n<Objs><S S="Error">Access denied_x000D__x000A_&lt;provider&gt;</S><S S="Verbose">hidden</S></Objs>';
+  assert.equal(powershellError({ stderr, message: 'Command failed: powershell.exe -EncodedCommand SECRET' }), 'Access denied\r\n<provider>');
+  assert.doesNotMatch(powershellError({ message: 'Command failed: powershell.exe -EncodedCommand SECRET' }), /SECRET|EncodedCommand/);
+  assert.match(powershellError({ killed: true }), /超时/);
+});

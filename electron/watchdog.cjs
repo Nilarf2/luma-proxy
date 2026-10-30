@@ -1,25 +1,60 @@
 const { ps } = require('./windows-proxy.cjs');
 const path = require('node:path');
 const fs = require('node:fs');
-// Start outside the Electron process job so recovery survives forced termination.
+const crypto = require('node:crypto');
+const b64 = value => Buffer.from(value, 'utf8').toString('base64');
+const decoded = value => `[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${b64(value)}'))`;
+
+// Explicit breakaway avoids inheriting a launcher's kill-on-close Windows job.
+// Unlike Win32_Process.Create, this path needs neither CIM nor the WMI service.
+const nativeLauncher = `
+Add-Type -TypeDefinition @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public static class LumaDetachedProcess {
+ [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct STARTUPINFO {
+  public int cb; public string reserved; public string desktop; public string title;
+  public int x,y,xSize,ySize,xChars,yChars,fill,flags; public short show,reservedSize;
+  public IntPtr reservedPtr,input,output,error;
+ }
+ [StructLayout(LayoutKind.Sequential)] struct PROCESS_INFORMATION { public IntPtr process,thread; public int id,threadId; }
+ [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+ static extern bool CreateProcessW(string app, StringBuilder command, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string cwd, ref STARTUPINFO startup, out PROCESS_INFORMATION info);
+ [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+ public static int Start(string app, string command) {
+  var startup = new STARTUPINFO(); startup.cb=Marshal.SizeOf(startup);
+  PROCESS_INFORMATION info;
+  if(!CreateProcessW(app,new StringBuilder(command),IntPtr.Zero,IntPtr.Zero,false,0x09000000,IntPtr.Zero,null,ref startup,out info)) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+  CloseHandle(info.thread); CloseHandle(info.process); return info.id;
+ }
+}
+'@
+[LumaDetachedProcess]::Start($p,$line)
+`;
+
 async function startWatchdog(pid, dir, binary) {
-  const journal = Buffer.from(path.join(dir, 'proxy-recovery.json'), 'utf8').toString('base64');
-  const exe = Buffer.from(binary, 'utf8').toString('base64');
+  if (process.env.LUMA_TEST_WATCHDOG === 'unavailable') throw Error('异常退出保护暂不可用');
+  const token = crypto.randomBytes(12).toString('hex');
+  const readyFile = path.join(dir, `recovery-ready-${pid}-${token}.json`);
+  const scriptFile = path.join(dir, `recovery-watchdog-${pid}-${token}.ps1`);
   const script = `
 $ErrorActionPreference='Stop'
-$file=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${journal}'))
-$exe=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${exe}'))
+$file=${decoded(path.join(dir, 'proxy-recovery.json'))}
+$exe=${decoded(binary)}
+$ready=${decoded(readyFile)}
 $log=$file+'.watchdog.log'
-Add-Content -LiteralPath $log -Value ('watching ${Number(pid)} at '+(Get-Date))
-while($true) {
- try { if(-not (Get-CimInstance Win32_Process -Filter 'ProcessId = ${Number(pid)}')) { break } } catch { }
- Start-Sleep -Milliseconds 800
-}
-Add-Content -LiteralPath $log -Value 'parent exited'
+$owner=Get-Process -Id ${Number(pid)} -ErrorAction Stop
+$started=$owner.StartTime.ToFileTimeUtc()
+[IO.File]::WriteAllText($ready,'${token}')
 try {
+ while($true) {
+  $owner=Get-Process -Id ${Number(pid)} -ErrorAction SilentlyContinue
+  if($null -eq $owner -or $owner.StartTime.ToFileTimeUtc() -ne $started) { break }
+  Start-Sleep -Milliseconds 500
+ }
  if(Test-Path -LiteralPath $file) {
   $j=Get-Content -LiteralPath $file -Raw | ConvertFrom-Json
-  Add-Content -LiteralPath $log -Value ('journal owner '+$j.ownerPid)
   if($j.ownerPid -eq ${Number(pid)}) {
    $key='HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings'
    $current=Get-ItemProperty $key
@@ -33,30 +68,51 @@ try {
     [LumaRecoveryInet]::InternetSetOption([IntPtr]::Zero,37,[IntPtr]::Zero,0) | Out-Null
    }
    if((Get-Content -LiteralPath $file -Raw | ConvertFrom-Json).ownerPid -eq ${Number(pid)}) { Remove-Item -LiteralPath $file -Force }
+   if($j.corePid) {
+    $core=Get-Process -Id $j.corePid -ErrorAction SilentlyContinue
+    if($core -and $core.Path -eq $exe -and $core.StartTime.ToFileTimeUtc().ToString() -eq $j.coreStarted) { Stop-Process -Id $j.corePid -Force -ErrorAction SilentlyContinue }
+   }
   }
  }
 } catch { Add-Content -LiteralPath $log -Value ($_ | Out-String) }
-try { Get-CimInstance Win32_Process -Filter 'ParentProcessId = ${Number(pid)}' | Where-Object { $_.ExecutablePath -eq $exe } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } } catch { }
+finally { Remove-Item -LiteralPath $ready -Force -ErrorAction SilentlyContinue; Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue }
 `;
-  const scriptFile = path.join(dir, `recovery-watchdog-${pid}.ps1`);
   fs.writeFileSync(scriptFile, '\ufeff' + script, 'utf8');
-  const file64 = Buffer.from(scriptFile, 'utf8').toString('base64');
-  const watcherPid = await ps(`
-$f=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${file64}'))
+  const common = `
+$ErrorActionPreference='Stop'
+$f=${decoded(scriptFile)}
 $p=Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe'
 $line='"'+$p+'" -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "'+$f+'"'
+`;
+  const cimLauncher = `
 $startup=New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ShowWindow=[UInt16]0}
 $r=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine=$line;ProcessStartupInformation=$startup}
-if($r.ReturnValue -ne 0) { throw 'Recovery process could not start' }
+if($r.ReturnValue -ne 0) { throw ('Windows recovery launch failed: '+$r.ReturnValue) }
 $r.ProcessId
-`);
-  fs.writeFileSync(path.join(dir, 'watchdog-launch.json'), JSON.stringify({ pid: Number(watcherPid), owner: pid }));
-  for (let attempt = 0; attempt < 100; attempt++) {
+`;
+  const failures = [];
+  const methods = process.env.LUMA_TEST_WATCHDOG === 'native' ? [['native', nativeLauncher]] : [['cim', cimLauncher], ['native', nativeLauncher]];
+  for (const [method, launcher] of methods) {
+    let watcherPid;
     try {
-      if (fs.readFileSync(path.join(dir, 'proxy-recovery.json.watchdog.log'), 'utf8').includes(`watching ${pid} at`)) return;
-    } catch {}
-    await new Promise(resolve => setTimeout(resolve, 100));
+      watcherPid = Number(await ps(common + launcher, 12000));
+      if (!Number.isInteger(watcherPid) || watcherPid <= 0) throw Error('未能取得恢复进程编号');
+      for (let attempt = 0; attempt < 100; attempt++) {
+        try {
+          if (fs.readFileSync(readyFile, 'utf8') === token) {
+            fs.writeFileSync(path.join(dir, 'watchdog-launch.json'), JSON.stringify({ pid: watcherPid, owner: pid, method }));
+            return { pid: watcherPid, method };
+          }
+        } catch {}
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      throw Error('Windows 恢复进程未能就绪');
+    } catch (error) {
+      failures.push(`${method}: ${error.message}`);
+      if (watcherPid) await ps(`Stop-Process -Id ${watcherPid} -Force -ErrorAction SilentlyContinue`).catch(() => {});
+    }
   }
-  throw new Error('Windows recovery process did not become ready');
+  fs.rmSync(scriptFile, { force: true }); fs.rmSync(readyFile, { force: true });
+  throw Error(failures.join('\n'));
 }
 module.exports = { startWatchdog };

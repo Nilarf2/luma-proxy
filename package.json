@@ -1,6 +1,6 @@
 {
   "name": "luma-proxy",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A quieter connection. Minimal Windows proxy client.",
   "main": "electron/main.cjs",
   "author": "Luma contributors",
@@ -81,7 +81,12 @@
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
+      "createDesktopShortcut": false,
+      "include": "build/installer.nsh",
+      "installerLanguages": [
+        "zh_CN",
+        "en_US"
+      ],
       "deleteAppDataOnUninstall": false
     },
     "portable": {

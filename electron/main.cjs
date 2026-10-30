@@ -7,7 +7,12 @@ const { Store } = require('./store.cjs');
 const { Engine } = require('./engine.cjs');
 const { parseProfile, downloadProfile } = require('./profile.cjs');
 const { WindowsProxy } = require('./windows-proxy.cjs');
-let win, tray, store, engine, proxy, quitting = false, busy = false, lastError = '';
+let win, tray, store, engine, proxy, quitting = false, busy = false, lastError = '', recoveryReady = false;
+async function ensureRecovery() {
+  if (recoveryReady) return;
+  try { await startWatchdog(process.pid, store.dir, path.join(asset('core'), 'mihomo.exe')); recoveryReady = true; }
+  catch (error) { throw Error('异常退出保护未能启动，系统代理尚未启用。请重试连接。\n' + error.message); }
+}
 if (!app.requestSingleInstanceLock()) app.quit();
 app.on('second-instance', () => { win?.show(); win?.focus(); });
 const asset = name => app.isPackaged ? path.join(process.resourcesPath, name) : path.join(__dirname, '..', 'resources', name);
@@ -15,7 +20,7 @@ const snapshot = () => ({ ...store.publicData(), running: engine.ready, systemPr
 function publish() { if (win && !win.isDestroyed()) win.webContents.send('state', snapshot()); updateTray(); }
 async function exclusive(fn) { if (busy) throw Error('正在处理上一项操作，请稍候'); busy = true; publish(); try { lastError = ''; return await fn(); } catch(e) { lastError = e.message; throw e; } finally { busy = false; publish(); } }
 async function disconnect() { await proxy.restore(); await engine.stop(); publish(); }
-async function connect() { if (process.platform !== 'win32') throw Error('当前仅支持 Windows 客户端'); const profile = store.data.profiles.find(p => p.id === store.data.activeId); if (!profile) throw Error('请先添加并选择一个订阅'); await engine.start(fs.readFileSync(store.profilePath(profile.id), 'utf8'), store.data.mode); try { await proxy.enable(engine.port); } catch(e) { await engine.stop(); throw e; } publish(); }
+async function connect() { if (process.platform !== 'win32') throw Error('当前仅支持 Windows 客户端'); const profile = store.data.profiles.find(p => p.id === store.data.activeId); if (!profile) throw Error('请先添加并选择一个订阅'); await ensureRecovery(); await engine.start(fs.readFileSync(store.profilePath(profile.id), 'utf8'), store.data.mode); try { await proxy.enable(engine.port, engine.child?.pid); } catch(e) { await engine.stop(); throw e; } publish(); }
 function updateTray() { if (!tray) return; tray.setToolTip(`Luma · ${engine.ready ? (proxy.enabled ? '已连接' : '内核运行中') : '未连接'}`); tray.setContextMenu(Menu.buildFromTemplate([{ label: '打开 Luma', click: () => { win.show(); win.focus(); } }, { label: engine.ready ? '断开连接' : '连接', enabled: !busy && !!store.data.activeId, click: () => exclusive(() => engine.ready ? disconnect() : connect()).catch(() => publish()) }, { type: 'separator' }, { label: '退出 Luma', click: () => app.quit() }])); }
 async function createWindow() {
   win = new BrowserWindow({ width: 1180, height: 800, minWidth: 940, minHeight: 690, title: 'Luma', backgroundColor: '#fafaf9', frame: false, show: false, icon: asset('icon.png'), webPreferences: { preload: path.join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true } });
@@ -30,7 +35,7 @@ function handle(name, fn) { ipcMain.handle(name, async (event, payload) => { if 
 app.whenReady().then(async () => {
   store = new Store(app.getPath('userData')); proxy = new WindowsProxy(store.dir);
   if (process.platform === 'win32') { try { await proxy.restore(); } catch { lastError = '恢复系统代理失败，请检查 Windows 代理设置'; }
-    await startWatchdog(process.pid, store.dir, path.join(asset('core'), 'mihomo.exe'));
+    try { await ensureRecovery(); } catch (error) { lastError = error.message; }
   }
   const coreDir = path.join(store.dir, 'core'); fs.mkdirSync(coreDir, { recursive: true });
   const bundled = asset('core'); if (fs.existsSync(bundled)) for (const f of fs.readdirSync(bundled)) if (/\.(dat|mmdb)$/.test(f) && !fs.existsSync(path.join(coreDir, f))) fs.copyFileSync(path.join(bundled, f), path.join(coreDir, f));
@@ -48,7 +53,7 @@ app.whenReady().then(async () => {
   handle('profile:update', id => exclusive(async () => { const p = store.data.profiles.find(p => p.id === id); if (!p?.url) throw Error('本地配置请重新导入'); const text = await downloadProfile(p.url); const running = engine.ready && id === store.data.activeId; if (running) await disconnect(); fs.writeFileSync(store.profilePath(id), text, { mode: 0o600 }); p.updatedAt = new Date().toISOString(); store.save(); if (running) await connect(); }));
   handle('profile:delete', id => exclusive(async () => { const p = store.data.profiles.find(p => p.id === id); if (!p) throw Error('订阅不存在'); const result = await dialog.showMessageBox(win, { type: 'question', buttons: ['取消', '移除'], defaultId: 0, cancelId: 0, message: `移除「${p.name}」？`, detail: '只移除本地配置，不影响订阅服务。' }); if (result.response !== 1) return; if (id === store.data.activeId) { await disconnect(); store.data.activeId = store.data.profiles.find(p => p.id !== id)?.id || null; } store.data.profiles = store.data.profiles.filter(p => p.id !== id); fs.rmSync(store.profilePath(id), { force: true }); store.save(); }));
   handle('mode', mode => exclusive(async () => { if (!['rule', 'global', 'direct'].includes(mode)) throw Error('模式无效'); if (engine.ready) await engine.api('/configs', 'PATCH', { mode }); store.data.mode = mode; store.save(); }));
-  handle('systemProxy', enabled => exclusive(async () => { if (typeof enabled !== 'boolean') throw Error('参数无效'); if (enabled) { if (!engine.ready) throw Error('请先连接'); await proxy.enable(engine.port); } else await proxy.restore(); }));
+  handle('systemProxy', enabled => exclusive(async () => { if (typeof enabled !== 'boolean') throw Error('参数无效'); if (enabled) { await ensureRecovery(); if (!engine.ready) throw Error('请先连接'); await proxy.enable(engine.port, engine.child?.pid); } else await proxy.restore(); }));
   handle('stats', () => engine.stats());
   handle('node:select', async ({ group, name }) => { if (!engine.ready) throw Error('请先连接'); const data = await engine.api('/proxies'); if (data.proxies[group]?.type !== 'Selector' || !data.proxies[group].all.includes(name)) throw Error('此策略组不支持手动切换'); await engine.api(`/proxies/${encodeURIComponent(group)}`, 'PUT', { name }); });
   handle('node:delay', async name => { if (!engine.ready || typeof name !== 'string' || name.length > 1024) throw Error('请先连接'); return engine.api(`/proxies/${encodeURIComponent(name)}/delay?timeout=7000&url=${encodeURIComponent('https://www.gstatic.com/generate_204')}`); });

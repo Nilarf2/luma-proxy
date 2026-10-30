@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { ArrowUpRight, ArrowDownLeft, ArrowRight, Check, ChevronDown, ChevronRight, CircleHelp, Clock3, Copy, FileUp, Globe2, Layers3, LayoutDashboard, Link2, Loader2, Minus, MoreHorizontal, Network, Plus, Power, Radio, RefreshCw, Search, Settings2, ShieldCheck, SlidersHorizontal, Square, Trash2, X, Zap, Activity, ArrowUp, ArrowDown } from 'lucide-react';
 import './style.css';
 const api = window.luma;
-const initial = { profiles: [], activeId: null, running: false, systemProxy: false, mode: 'rule', closeToTray: true, launchAtLogin: false, version: '0.1.0', busy: false };
+const initial = { profiles: [], activeId: null, running: false, systemProxy: false, mode: 'rule', closeToTray: true, launchAtLogin: false, version: '0.1.1', busy: false };
 const pages = [{ id:'overview', name:'概览', en:'Overview', icon:LayoutDashboard },{id:'proxies',name:'代理节点',en:'Proxies',icon:Globe2},{id:'profiles',name:'订阅管理',en:'Profiles',icon:Layers3},{id:'connections',name:'活动连接',en:'Connections',icon:Network},{id:'settings',name:'偏好设置',en:'Preferences',icon:Settings2}];
 const bytes = n => { if (!n) return '0 B'; const i = Math.min(3,Math.floor(Math.log(n)/Math.log(1024))); return `${(n/1024**i).toFixed(i ? 1 : 0)} ${['B','KB','MB','GB'][i]}`; };
 const fmtTime = n => { const s=Math.floor(n/1000); return `${String(Math.floor(s/3600)).padStart(2,'0')}:${String(Math.floor(s/60)%60).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`; };
