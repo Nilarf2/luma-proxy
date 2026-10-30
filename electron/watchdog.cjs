@@ -49,8 +49,10 @@ $started=$owner.StartTime.ToFileTimeUtc()
 [IO.File]::WriteAllText($ready,'${token}')
 try {
  while($true) {
-  $owner=Get-Process -Id ${Number(pid)} -ErrorAction SilentlyContinue
-  if($null -eq $owner -or $owner.StartTime.ToFileTimeUtc() -ne $started) { break }
+  try {
+   $owner=Get-Process -Id ${Number(pid)} -ErrorAction SilentlyContinue
+   if($null -eq $owner -or $owner.StartTime.ToFileTimeUtc() -ne $started) { break }
+  } catch { }
   Start-Sleep -Milliseconds 500
  }
  if(Test-Path -LiteralPath $file) {
