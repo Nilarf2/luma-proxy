@@ -16,6 +16,11 @@ try {
     Check("validated proxy provider becomes protected local file", () => { var result = ConfigPolicy.Rewrite("proxy-providers: {p: {type: http, url: https://example.invalid/a, path: ../../bad}}", dir, 1, "x", new() { ["p"] = Path.Combine(dir, "cache", "safe.yaml") }); if (!result.Contains("type: file") || result.Contains("example.invalid")) throw new Exception(result); });
     Check("rule provider cache path rewritten", () => { var result = ConfigPolicy.Rewrite("rule-providers: {r: {type: http, url: https://example.invalid/r, path: ../../bad}}", dir, 1, "x"); if (result.Contains("../../bad")) throw new Exception(); });
     Check("HTTP provider URL protocol constrained", () => Denied(() => ConfigPolicy.ProxyProviderSources("proxy-providers: {p: {type: http, url: file:///C:/Windows/secrets}}")));
+    var bridgeUrl="http://127.0.0.1:32123/luma-provider/"+new string('a',64)+"/"+new string('b',64);
+    Check("authenticated local provider bridge preserves refresh interval",()=>{var sources=ConfigPolicy.ProxyProviderSources("proxy-providers: {p: {type: http, interval: 30, url: "+bridgeUrl+"}}"); if(sources["p"].Url!=bridgeUrl||sources["p"].Interval!=30) throw new Exception();});
+    Check("privileged proxy provider cannot fetch upstream directly",()=>Denied(()=>ConfigPolicy.ProxyProviderSources("proxy-providers: {p: {type: http, url: https://example.invalid/provider}}")));
+    Check("provider bridge path and query injection denied",()=>{foreach(var u in new[]{bridgeUrl+"?url=x",bridgeUrl.Replace("127.0.0.1","localhost"),bridgeUrl.Replace("/luma-provider/","/other/")}) Denied(()=>ConfigPolicy.ProxyProviderSources("proxy-providers: {p: {type: http, url: '"+u+"'}}"));});
+    Check("negative provider interval denied",()=>Denied(()=>ConfigPolicy.ProxyProviderSources("proxy-providers: {p: {type: http, interval: -1, url: "+bridgeUrl+"}}")));
     Check("remote proxy provider content inspected", () => Denied(() => ConfigPolicy.ProviderContent("proxies: [{name: x, type: http, ca-file: C:/Windows/secrets}]", dir)));
     Check("provider arbitrary root rejected", () => Denied(() => ConfigPolicy.ProviderContent("proxies: []\nexternal-controller: 0.0.0.0:1", dir)));
     Check("provider normal WebSocket path retained", () => ConfigPolicy.ProviderContent("proxies: [{name: x, type: vless, ws-opts: {path: /transport}}]", dir));
@@ -32,5 +37,19 @@ try {
     Check("extra proxy mutation denied", () => Denied(() => ApiPolicy.Validate("/proxies/p", "PUT", JsonNode.Parse("{\"name\":\"x\",\"path\":\"bad\"}"))));
     Check("connection close allowed", () => ApiPolicy.Validate("/connections/fixture-id", "DELETE", null));
     Check("encoded path traversal denied", () => Denied(() => ApiPolicy.Validate("/proxies/%2e%2e/configs", "PUT", JsonNode.Parse("{\"name\":\"x\"}"))));
+    Directory.CreateDirectory(dir);
+    byte[] Image(ushort machine = 0x8664, ushort flags = 2) { var bytes = new byte[512]; using var stream = new MemoryStream(bytes); using var writer = new BinaryWriter(stream); writer.Write((ushort)0x5a4d); stream.Position = 0x3c; writer.Write(128); stream.Position = 128; writer.Write(0x00004550); writer.Write(machine); stream.Position = 150; writer.Write(flags); writer.Write((ushort)0x20b); return bytes; }
+    var source = Path.Combine(dir, "selected.exe"); var target = Path.Combine(dir, "mihomo.exe");
+    File.WriteAllBytes(source, Image()); var imageHash = CoreImage.Hash(source);
+    Check("selected core hashed and staged from exact image", () => { var staged = target + ".test"; CoreImage.Stage(source, staged, imageHash); if (!File.ReadAllBytes(staged).SequenceEqual(File.ReadAllBytes(source))) throw new Exception(); File.Delete(staged); });
+    Check("changed source hash denied before privileged copy", () => Denied(() => CoreImage.Stage(source, target + ".bad-hash", new string('0',64))));
+    Check("non-PE core denied", () => { var bad = Path.Combine(dir, "bad.exe"); File.WriteAllBytes(bad,new byte[512]); Denied(() => CoreImage.Stage(bad,target + ".bad-image",CoreImage.Hash(bad))); });
+    Check("non-x64 core denied", () => { var bad=Path.Combine(dir,"arm.exe"); File.WriteAllBytes(bad,Image(0xaa64)); Denied(() => CoreImage.Stage(bad,target + ".arm-image",CoreImage.Hash(bad))); });
+    Check("DLL core denied", () => { var bad=Path.Combine(dir,"dll.exe"); File.WriteAllBytes(bad,Image(0x8664,0x2002)); Denied(() => CoreImage.Stage(bad,target + ".dll-image",CoreImage.Hash(bad))); });
+    Check("existing staging file never overwritten", () => { var staged=target+".existing"; File.WriteAllText(staged,"preserved"); Denied(() => CoreImage.Stage(source,staged,imageHash)); if(File.ReadAllText(staged)!="preserved") throw new Exception(); });
+    Check("selected core rollback restores prior image", () => { File.WriteAllText(target,"previous"); var starts=0; var stops=0; try { CoreImage.Replace(source,target,imageHash,()=>stops++,()=>{if(++starts==1) throw new IOException("Injected start failure");}); throw new Exception("Expected start failure"); } catch(IOException){} if(File.ReadAllText(target)!="previous" || starts!=2 || stops!=2) throw new Exception(); });
+    Check("selected core swap starts verified image", () => { var stopped=false; CoreImage.Replace(source,target,imageHash,()=>stopped=true,()=>{if(!stopped || CoreImage.Hash(target)!=imageHash) throw new Exception();}); if(Directory.EnumerateFiles(dir,"mihomo.exe.*-*").Any()) throw new Exception("Left transaction files"); });
+    Check("source symlink denied", () => { var link=Path.Combine(dir,"link.exe"); File.CreateSymbolicLink(link,source); Denied(()=>CoreImage.Stage(link,target+".link-image",imageHash)); });
+    if(OperatingSystem.IsWindows()) Check("Windows writer is denied during image approval", () => { using var writer=new FileStream(source,FileMode.Open,FileAccess.Write,FileShare.ReadWrite); Denied(()=>CoreImage.Stage(source,target+".writer-image",imageHash)); });
     Console.WriteLine($"Service policy: {passed} checks passed");
 } finally { if (Directory.Exists(dir)) Directory.Delete(dir, true); }

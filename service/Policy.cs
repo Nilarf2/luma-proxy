@@ -35,11 +35,11 @@ static class ConfigPolicy {
         if (!root.Children.TryGetValue(new YamlScalarNode("payload"), out var payload) || payload is not YamlSequenceNode sequence || sequence.Children.Any(n => n is not YamlScalarNode)) throw new IOException("Local rule provider must contain scalar payload");
         using var output = new StringWriter(); yaml.Save(output, false); return output.ToString();
     }
-    public static Dictionary<string, string> ProxyProviderSources(string text) {
-        var yaml = new YamlStream(); yaml.Load(new StringReader(text)); var result = new Dictionary<string, string>();
+    public static Dictionary<string, (string Url, int Interval)> ProxyProviderSources(string text) {
+        var yaml = new YamlStream(); yaml.Load(new StringReader(text)); var result = new Dictionary<string, (string Url, int Interval)>();
         if (yaml.Documents.Count != 1 || yaml.Documents[0].RootNode is not YamlMappingNode root) throw new IOException("Invalid config");
         if (root.Children.TryGetValue(new YamlScalarNode("proxy-providers"), out var node) && node is YamlMappingNode map) foreach (var entry in map.Children) {
-            if (entry.Value is YamlMappingNode provider && provider.Children.TryGetValue(new YamlScalarNode("type"), out var type) && type.ToString() == "http") { var url = provider.Children.TryGetValue(new YamlScalarNode("url"), out var address) ? address.ToString() : ""; RequireHttp(url); result[entry.Key.ToString()] = url; }
+            if (entry.Value is YamlMappingNode provider && provider.Children.TryGetValue(new YamlScalarNode("type"), out var type) && type.ToString() == "http") { var url = provider.Children.TryGetValue(new YamlScalarNode("url"), out var address) ? address.ToString() : ""; RequireBridge(url); var interval = 0; if (provider.Children.TryGetValue(new YamlScalarNode("interval"), out var configured) && (!int.TryParse(configured.ToString(), out interval) || interval < 0)) throw new IOException("Invalid provider interval"); result[entry.Key.ToString()] = (url, interval); }
         } return result;
     }
     public static string ProviderContent(string text, string dir) {
@@ -47,6 +47,7 @@ static class ConfigPolicy {
         if (yaml.Documents.Count != 1 || yaml.Documents[0].RootNode is not YamlMappingNode root || root.Children.Count != 1 || !root.Children.TryGetValue(new YamlScalarNode("proxies"), out var proxies) || proxies is not YamlSequenceNode) throw new IOException("Service proxy providers require YAML proxies");
         ValidateTree(root, dir, 0); using var output = new StringWriter(); yaml.Save(output, false); return output.ToString();
     }
+    static void RequireBridge(string value) { if (!Regex.IsMatch(value, @"\Ahttp://127\.0\.0\.1:[0-9]{1,5}/luma-provider/[a-f0-9]{64}/[a-f0-9]{64}\z") || !Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Port < 1 || uri.Port > 65535) throw new IOException("Proxy providers require an authenticated local bridge"); }
     static void RequireHttp(string value) { if (!Uri.TryCreate(value, UriKind.Absolute, out var u) || (u.Scheme != "http" && u.Scheme != "https") || !string.IsNullOrEmpty(u.UserInfo)) throw new IOException("Only HTTP(S) URLs without user info are allowed"); }
     static void ValidateTree(YamlNode node, string dir, int depth, string context = "") {
         if (depth > 40) throw new IOException("Configuration nesting too deep");

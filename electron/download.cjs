@@ -12,10 +12,12 @@ function normalizeDownload(value = {}) {
   return next;
 }
 function urlValue(value) { let u; try { u = new URL(value); } catch { throw Error('请输入有效的订阅地址'); } if (!['http:', 'https:'].includes(u.protocol) || u.username || u.password) throw Error('订阅地址必须为 HTTP / HTTPS'); return u; }
-async function requestSubscription(value, download, proxyPort) {
+async function requestSubscription(value, download, proxyPort, signal) {
   const options = normalizeDownload(download);
   if (options.viaProxy && (!Number.isInteger(proxyPort) || proxyPort < 1 || proxyPort > 65535)) throw Error('请先连接内核，再通过代理更新订阅');
-  const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), options.timeout); timer.unref();
+  const controller = new AbortController(), abort = () => controller.abort();
+  if (signal?.aborted) controller.abort(); else signal?.addEventListener('abort', abort, { once: true });
+  const timer = setTimeout(abort, options.timeout); timer.unref();
   let headers = { 'User-Agent': options.userAgent, Accept: 'text/yaml,text/plain,*/*', 'Accept-Encoding': 'identity', ...options.headers }, current = urlValue(value);
   try {
     for (let redirects = 0; redirects <= 5; redirects++) {
@@ -25,7 +27,7 @@ async function requestSubscription(value, download, proxyPort) {
       return result;
     }
   } catch (error) { if (controller.signal.aborted) throw Error('订阅下载超时'); if (/^订阅|^请|^输入|^不支持/.test(error.message)) throw error; throw Error('订阅下载失败，请检查网络或下载设置'); }
-  finally { clearTimeout(timer); }
+  finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
 }
 function requestOnce(u, headers, proxyPort, signal) {
   return new Promise((resolve, reject) => {

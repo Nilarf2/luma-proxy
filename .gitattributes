@@ -1,0 +1,2 @@
+# Preserve the pinned upstream bytes used by SHA256SUMS.upstream on every OS.
+media/upstream/** -text

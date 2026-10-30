@@ -21,6 +21,7 @@ static class Program {
             if (args.SequenceEqual(new[] { "--service" })) { ServiceBase.Run(new Broker()); return 0; }
             if (args.Length == 3 && args[0] == "--install") { Install(args[1], int.Parse(args[2])); return 0; }
             if (args.Length == 3 && args[0] == "--uninstall") { Uninstall(args[1], int.Parse(args[2])); return 0; }
+            if (args.Length == 5 && args[0] == "--sync-core") { SyncCore(args[1], int.Parse(args[2]), args[3], args[4]); return 0; }
             throw new InvalidOperationException("Unsupported helper command");
         } catch (Exception e) { Console.Error.WriteLine(e.Message); return 1; }
     }
@@ -59,21 +60,34 @@ static class Program {
         using (var controller = new ServiceController(Name)) { if (controller.Status != ServiceControllerStatus.Stopped) { controller.Stop(); controller.WaitForStatus(ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(20)); } }
         Sc("delete", Name); Exception? failure = null; for (var i = 0; i < 20; i++) { try { Directory.Delete(InstallDir, true); return; } catch (IOException e) { failure = e; Thread.Sleep(250); } } throw new IOException("Service removed but protected files remain; retry cleanup as administrator", failure);
     }
+    static void SyncCore(string sid, int ownerPid, string encodedSource, string expectedHash) {
+        RequireAdmin(sid, ownerPid); NoLinks(InstallDir);
+        if (File.ReadAllText(Path.Combine(InstallDir, "owner.txt")).Trim() != sid) throw new UnauthorizedAccessException("Service belongs to another account");
+        if (encodedSource.Length > 32768) throw new IOException("Source path is too long");
+        var source = Encoding.UTF8.GetString(Convert.FromBase64String(encodedSource));
+        if (!System.Text.RegularExpressions.Regex.IsMatch(source, @"\A[A-Za-z]:\\[^:\r\n]*\z")) throw new IOException("A local Windows core path is required");
+        source = Path.GetFullPath(source);
+        using var service = new ServiceController(Name);
+        void Stop() { service.Refresh(); if (service.Status != ServiceControllerStatus.Stopped) { service.Stop(); service.WaitForStatus(ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(30)); } }
+        void Start() { service.Refresh(); if (service.Status == ServiceControllerStatus.Stopped) service.Start(); service.WaitForStatus(ServiceControllerStatus.Running, TimeSpan.FromSeconds(30)); }
+        CoreImage.Replace(source, Path.Combine(InstallDir, "mihomo.exe"), expectedHash, Stop, Start);
+    }
     public static void CheckProtected() { NoLinks(InstallDir); if (!Path.GetFullPath(AppContext.BaseDirectory).TrimEnd(Path.DirectorySeparatorChar).Equals(InstallDir, StringComparison.OrdinalIgnoreCase)) throw new UnauthorizedAccessException("Service must run from protected installation"); }
 }
 
 sealed class Broker : ServiceBase {
-    CancellationTokenSource? cancel; NamedPipeServerStream? serverPipe; CoreJob? lifetimeJob; Process? core; Process? owner; string sid = "", secret = ""; int controller; readonly List<string> logs = new(); readonly object gate = new(); readonly Dictionary<string, (string Url, string Path)> providers = new(); readonly HttpClient http = new(new HttpClientHandler { UseProxy = false });
+    CancellationTokenSource? cancel; NamedPipeServerStream? serverPipe; CoreJob? lifetimeJob; Process? core; Process? owner; string sid = "", secret = "", coreHash = ""; int controller; readonly List<string> logs = new(); readonly object gate = new(); readonly Dictionary<string, (string Url, string Path, int Interval, DateTime Next)> providers = new(); CancellationTokenSource? providerRefresh; readonly SemaphoreSlim providerGate = new(1,1); readonly HttpClient http = new(new HttpClientHandler { UseProxy = false, AllowAutoRedirect = false });
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetNamedPipeClientProcessId(IntPtr pipe, out uint pid);
     public Broker() { ServiceName = Program.Name; CanStop = true; AutoLog = true; }
-    protected override void OnStart(string[] args) { Program.CheckProtected(); sid = File.ReadAllText(Path.Combine(Program.InstallDir, "owner.txt")).Trim(); _ = new SecurityIdentifier(sid); lifetimeJob = new CoreJob(); lifetimeJob.Assign(Process.GetCurrentProcess().Handle); var acl = new PipeSecurity(); acl.SetAccessRuleProtection(true, false); acl.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(sid), PipeAccessRights.ReadWrite, AccessControlType.Allow)); acl.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null), PipeAccessRights.FullControl, AccessControlType.Allow));
+    protected override void OnStart(string[] args) { Program.CheckProtected(); coreHash = CoreImage.Hash(Path.Combine(Program.InstallDir, "mihomo.exe")); sid = File.ReadAllText(Path.Combine(Program.InstallDir, "owner.txt")).Trim(); _ = new SecurityIdentifier(sid); lifetimeJob = new CoreJob(); lifetimeJob.Assign(Process.GetCurrentProcess().Handle); var acl = new PipeSecurity(); acl.SetAccessRuleProtection(true, false); acl.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(sid), PipeAccessRights.ReadWrite, AccessControlType.Allow)); acl.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null), PipeAccessRights.FullControl, AccessControlType.Allow));
         serverPipe = NamedPipeServerStreamAcl.Create("Luma.Proxy." + sid, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.FirstPipeInstance, 16384, 16384, acl);
         cancel = new(); _ = Serve(serverPipe, cancel.Token); _ = WatchOwner(cancel.Token); }
     protected override void OnStop() { cancel?.Cancel(); serverPipe?.Dispose(); StopCore(); }
     async Task WatchOwner(CancellationToken token) { try { while (!token.IsCancellationRequested) { await Task.Delay(750, token); lock (gate) { if (core != null && (owner == null || owner.HasExited)) StopCore(); } } } catch (OperationCanceledException) {} }
-    void StopCore() { lock (gate) { if (core != null) { try { if (!core.HasExited) { core.Kill(true); core.WaitForExit(5000); } } catch {} core.Dispose(); core = null; } owner?.Dispose(); owner = null; } }
+    void StopCore() { lock (gate) { providerRefresh?.Cancel(); providerRefresh?.Dispose(); providerRefresh = null; if (core != null) { try { if (!core.HasExited) { core.Kill(true); core.WaitForExit(5000); } } catch {} core.Dispose(); core = null; } owner?.Dispose(); owner = null; } }
     async Task Serve(NamedPipeServerStream pipe, CancellationToken token) {
         while (!token.IsCancellationRequested) {
+            var unacknowledgedStart = false;
             try {
                 await pipe.WaitForConnectionAsync(token);
                 if (!GetNamedPipeClientProcessId(pipe.SafePipeHandle.DangerousGetHandle(), out var clientPid)) throw new UnauthorizedAccessException("Client identity rejected");
@@ -81,16 +95,16 @@ sealed class Broker : ServiceBase {
                 var data = new MemoryStream(); var one = new byte[16384]; bool complete = false;
                 while (!complete) { var n = await pipe.ReadAsync(one, deadline.Token); if (n == 0) throw new IOException("Incomplete request"); var newline = Array.IndexOf(one, (byte)10, 0, n); data.Write(one, 0, newline < 0 ? n : newline); if (data.Length > 24 * 1024 * 1024) throw new IOException("Request too large"); complete = newline >= 0; }
                 var clientSid = ""; pipe.RunAsClient(() => { using var identity = WindowsIdentity.GetCurrent(true); clientSid = identity?.User?.Value ?? ""; }); if (clientSid != sid) throw new UnauthorizedAccessException("Client identity rejected");
-                JsonObject result; try { var req = JsonNode.Parse(data.ToArray())?.AsObject() ?? throw new IOException("Invalid request"); result = new() { ["ok"] = true, ["data"] = await Dispatch(req, checked((int)clientPid), deadline.Token) }; } catch (Exception e) { result = new() { ["ok"] = false, ["error"] = e is UnauthorizedAccessException ? "Service request denied" : "Service operation failed: " + e.Message }; }
+                JsonObject result; try { var req = JsonNode.Parse(data.ToArray())?.AsObject() ?? throw new IOException("Invalid request"); var value = await Dispatch(req, checked((int)clientPid), deadline.Token); unacknowledgedStart = req["action"]?.GetValue<string>() == "start"; result = new() { ["ok"] = true, ["data"] = value }; } catch (Exception e) { result = new() { ["ok"] = false, ["error"] = e is UnauthorizedAccessException ? "Service request denied" : "Service operation failed: " + e.Message }; }
                 var output = Encoding.UTF8.GetBytes(result.ToJsonString() + "\n"); await pipe.WriteAsync(output, deadline.Token);
                 // Wait for client close/ack before disconnecting; otherwise Windows may discard unread response bytes.
-                await pipe.ReadAsync(new byte[1], deadline.Token);
-            } catch (OperationCanceledException) when (token.IsCancellationRequested) { break; } catch { /* A malformed/disconnected client must not stop protection. */ } finally { try { pipe.Disconnect(); } catch {} }
+                var ack = new byte[1]; if (await pipe.ReadAsync(ack, deadline.Token) != 1 || ack[0] != 10) throw new IOException("Response acknowledgement missing"); unacknowledgedStart = false;
+            } catch (OperationCanceledException) when (token.IsCancellationRequested) { break; } catch { /* A malformed/disconnected client must not stop protection. */ } finally { if (unacknowledgedStart) StopCore(); try { pipe.Disconnect(); } catch {} }
         }
     }
     async Task<JsonNode?> Dispatch(JsonObject req, int clientPid, CancellationToken token) {
         var action = req["action"]?.GetValue<string>();
-        if (action == "status") { lock (gate) return JsonSerializer.SerializeToNode(new { installed = true, running = true, coreRunning = core != null && !core.HasExited, pid = core != null && !core.HasExited ? (int?)core.Id : null }, Program.Json); }
+        if (action == "status") { lock (gate) return JsonSerializer.SerializeToNode(new { installed = true, running = true, coreSha256 = coreHash, coreRunning = core != null && !core.HasExited, pid = core != null && !core.HasExited ? (int?)core.Id : null }, Program.Json); }
         if (action == "logs") { lock (gate) return JsonSerializer.SerializeToNode(logs.ToArray()); }
         if (action == "stop") { EnsureOwner(clientPid); StopCore(); return null; }
         if (action == "start") {
@@ -99,12 +113,12 @@ sealed class Broker : ServiceBase {
             var text = req["config"]?.GetValue<string>() ?? throw new IOException("Config missing"); StopCore();
             secret = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)); controller = FreePort(); var dir = Path.Combine(Program.InstallDir, "Data");
             var localProviders = new Dictionary<string, string>(); if (req["providers"] is JsonObject submitted) { if (submitted.Count > 128) throw new IOException("Too many provider assets"); var total = 0; foreach (var entry in submitted) { if (!System.Text.RegularExpressions.Regex.IsMatch(entry.Key, @"^\./providers/[a-f0-9]{64}\.yaml$")) throw new IOException("Invalid provider asset path"); var content = entry.Value?.GetValue<string>() ?? throw new IOException("Invalid provider asset"); total += Encoding.UTF8.GetByteCount(content); if (total > 8 * 1024 * 1024) throw new IOException("Provider assets too large"); var protectedPath = Path.Combine(dir, "cache", Path.GetFileName(entry.Key)); Directory.CreateDirectory(Path.GetDirectoryName(protectedPath)!); File.WriteAllText(protectedPath, ConfigPolicy.LocalProviderContent(content, dir)); localProviders[entry.Key] = protectedPath; } }
-            providers.Clear(); var paths = new Dictionary<string, string>(); foreach (var entry in ConfigPolicy.ProxyProviderSources(text)) { var providerPath = Path.Combine(dir, "cache", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes("proxy-providers:" + entry.Key))) + ".yaml"); Directory.CreateDirectory(Path.GetDirectoryName(providerPath)!); providers[entry.Key] = (entry.Value, providerPath); await RefreshProvider(entry.Key, token); paths[entry.Key] = providerPath; }
+            providerRefresh = CancellationTokenSource.CreateLinkedTokenSource(cancel!.Token); lock(gate) providers.Clear(); var paths = new Dictionary<string, string>(); foreach (var entry in ConfigPolicy.ProxyProviderSources(text)) { var providerPath = Path.Combine(dir, "cache", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes("proxy-providers:" + entry.Key))) + ".yaml"); Directory.CreateDirectory(Path.GetDirectoryName(providerPath)!); lock(gate) providers[entry.Key] = (entry.Value.Url, providerPath, entry.Value.Interval, DateTime.UtcNow.AddSeconds(entry.Value.Interval)); await RefreshProvider(entry.Key, token); paths[entry.Key] = providerPath; }
             var safe = ConfigPolicy.Rewrite(text, dir, controller, secret, paths, localProviders); File.WriteAllText(Path.Combine(dir, "runtime.yaml"), safe);
             var p = new Process { StartInfo = new() { FileName = Path.Combine(Program.InstallDir, "mihomo.exe"), WorkingDirectory = dir, UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true } }; foreach (var arg in new[] { "-d", dir, "-f", Path.Combine(dir, "runtime.yaml") }) p.StartInfo.ArgumentList.Add(arg);
             p.StartInfo.Environment.Remove("SAFE_PATHS"); p.OutputDataReceived += Record; p.ErrorDataReceived += Record;
-            lock (gate) { if (requestedOwner.HasExited) throw new IOException("Owner exited before core start"); owner = Process.GetProcessById(clientPid); if (owner.StartTime != requestedStarted) { owner.Dispose(); owner = null; throw new UnauthorizedAccessException("Owner identity changed"); } _ = owner.Handle; core = p; try { p.Start(); p.BeginOutputReadLine(); p.BeginErrorReadLine(); } catch { StopCore(); throw; } }
-            return new JsonObject { ["pid"] = p.Id };
+            token.ThrowIfCancellationRequested(); lock (gate) { token.ThrowIfCancellationRequested(); if (requestedOwner.HasExited) throw new IOException("Owner exited before core start"); owner = Process.GetProcessById(clientPid); if (owner.StartTime != requestedStarted) { owner.Dispose(); owner = null; throw new UnauthorizedAccessException("Owner identity changed"); } _ = owner.Handle; core = p; try { p.Start(); p.BeginOutputReadLine(); p.BeginErrorReadLine(); } catch { StopCore(); throw; } }
+            _ = RefreshProviders(providerRefresh.Token); return new JsonObject { ["pid"] = p.Id };
         }
         if (action == "api") { EnsureOwner(clientPid); if (core == null || core.HasExited) throw new IOException("Core stopped"); var method = req["method"]?.GetValue<string>() ?? "GET"; var endpoint = req["endpoint"]?.GetValue<string>() ?? ""; var body = req["data"]; ApiPolicy.Validate(endpoint, method, body); if (method == "PUT" && endpoint.StartsWith("/providers/proxies/")) { var name = Uri.UnescapeDataString(endpoint["/providers/proxies/".Length..]); if (providers.ContainsKey(name)) await RefreshProvider(name, token); } using var message = new HttpRequestMessage(new HttpMethod(method), "http://127.0.0.1:" + controller + endpoint); message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", secret); if (body != null) message.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json"); using var response = await http.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, token); if (!response.IsSuccessStatusCode) throw new IOException("Core API returned " + (int)response.StatusCode); var output = await BoundedText(response.Content, token); var json = string.IsNullOrWhiteSpace(output) ? null : JsonNode.Parse(output); if (endpoint == "/configs" && json is JsonObject obj) foreach (var key in new[] { "secret", "external-controller", "external-controller-tls", "external-controller-pipe", "external-controller-unix" }) obj.Remove(key); return json; }
         throw new UnauthorizedAccessException("Unsupported service action");
@@ -113,11 +127,21 @@ sealed class Broker : ServiceBase {
         if (content.Headers.ContentLength > 8 * 1024 * 1024) throw new IOException("Core response too large"); using var stream = await content.ReadAsStreamAsync(token); using var buffer = new MemoryStream(); var chunk = new byte[16384]; int size;
         while ((size = await stream.ReadAsync(chunk, token)) > 0) { buffer.Write(chunk, 0, size); if (buffer.Length > 8 * 1024 * 1024) throw new IOException("Core response too large"); } return Encoding.UTF8.GetString(buffer.ToArray());
     }
+    async Task RefreshProviders(CancellationToken token) {
+        try { while (!token.IsCancellationRequested) { await Task.Delay(1000, token); string[] due; lock(gate) due = providers.Where(p => p.Value.Interval > 0 && p.Value.Next <= DateTime.UtcNow).Select(p => p.Key).ToArray(); foreach(var name in due) {
+            try { await RefreshProvider(name, token); using var update = new HttpRequestMessage(HttpMethod.Put, "http://127.0.0.1:"+controller+"/providers/proxies/"+Uri.EscapeDataString(name)); update.Headers.Authorization = new AuthenticationHeaderValue("Bearer",secret); using var response = await http.SendAsync(update, token); response.EnsureSuccessStatusCode(); }
+            catch(OperationCanceledException) when(token.IsCancellationRequested) { throw; } catch { lock(gate) { logs.Add("Provider refresh failed"); if(logs.Count>500) logs.RemoveAt(0); } }
+            finally { lock(gate) if(!token.IsCancellationRequested && providers.TryGetValue(name,out var entry)) providers[name]=(entry.Url,entry.Path,entry.Interval,DateTime.UtcNow.AddSeconds(Math.Max(1,entry.Interval))); }
+        } } } catch(OperationCanceledException) { }
+    }
     async Task RefreshProvider(string name, CancellationToken token) {
-        var entry = providers[name]; using var response = await http.GetAsync(entry.Url, HttpCompletionOption.ResponseHeadersRead, token); response.EnsureSuccessStatusCode();
-        if (response.Content.Headers.ContentLength > 8 * 1024 * 1024) throw new IOException("Provider too large"); using var stream = await response.Content.ReadAsStreamAsync(token); using var buffer = new MemoryStream(); var chunk = new byte[16384]; int size;
-        while ((size = await stream.ReadAsync(chunk, token)) > 0) { buffer.Write(chunk, 0, size); if (buffer.Length > 8 * 1024 * 1024) throw new IOException("Provider too large"); }
-        var safe = ConfigPolicy.ProviderContent(Encoding.UTF8.GetString(buffer.ToArray()), Path.Combine(Program.InstallDir, "Data")); var temp = entry.Path + ".tmp"; File.WriteAllText(temp, safe); File.Move(temp, entry.Path, true);
+        await providerGate.WaitAsync(token); try {
+            (string Url, string Path, int Interval, DateTime Next) entry; lock(gate) entry=providers[name];
+            using var response = await http.GetAsync(entry.Url, HttpCompletionOption.ResponseHeadersRead, token); response.EnsureSuccessStatusCode();
+            if (response.Content.Headers.ContentLength > 8 * 1024 * 1024) throw new IOException("Provider too large"); using var stream = await response.Content.ReadAsStreamAsync(token); using var buffer = new MemoryStream(); var chunk = new byte[16384]; int size;
+            while ((size = await stream.ReadAsync(chunk, token)) > 0) { buffer.Write(chunk, 0, size); if (buffer.Length > 8 * 1024 * 1024) throw new IOException("Provider too large"); }
+            token.ThrowIfCancellationRequested(); var safe = ConfigPolicy.ProviderContent(Encoding.UTF8.GetString(buffer.ToArray()), Path.Combine(Program.InstallDir, "Data")); var temp = entry.Path + ".tmp"; File.WriteAllText(temp, safe); token.ThrowIfCancellationRequested(); File.Move(temp, entry.Path, true);
+        } finally { providerGate.Release(); }
     }
     void EnsureOwner(int pid) { lock (gate) if (owner != null && !owner.HasExited && (owner.Id != pid || Process.GetProcessById(pid).StartTime != owner.StartTime)) throw new UnauthorizedAccessException("Another app owns the core"); }
     void Record(object sender, DataReceivedEventArgs e) { if (e.Data == null) return; var line = System.Text.RegularExpressions.Regex.Replace(e.Data, @"https?://[^\s""']+", "[URL]"); lock (gate) { logs.Add(line[..Math.Min(line.Length, 1200)]); if (logs.Count > 500) logs.RemoveAt(0); } }

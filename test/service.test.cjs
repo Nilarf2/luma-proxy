@@ -24,3 +24,29 @@ test('service install UAC helper source is fixed and safely quoted', async () =>
 });
 test('UAC cancellation is an actionable error', async () => { const client = new ServiceClient({ platform: 'win32', run: async file => { if (file === 'whoami.exe') return { stdout: sid }; throw Error('cancelled'); } }); await assert.rejects(client.install(), /取消权限请求/); });
 test('non-Windows reports unsupported service without invoking OS commands', async () => { const client = new ServiceClient({ platform: 'linux', run: async () => { throw Error('must not run'); } }); assert.equal((await client.status()).installed, false); await assert.rejects(client.install(), /仅支持 Windows/); });
+test('selected service core sync passes encoded path and exact digest to fixed elevated helper', async () => {
+  const calls = [], source = "C:\\User Space\\O'Neil\\mihomo.exe", digest = 'a'.repeat(64);
+  const client = new ServiceClient({ platform: 'win32', resourcesDir: 'C:\\App\\resources', readCoreDigest: file => { assert.equal(file, source); return digest; }, run: async (file, args) => { calls.push({ file, args }); return { stdout: sid }; } });
+  client.status = async () => ({ coreSha256: digest }); assert.equal((await client.syncCore(source)).coreSha256, digest);
+  const script = Buffer.from(calls.at(-1).args.at(-1), 'base64').toString('utf16le');
+  assert.match(script, /--sync-core/); assert.ok(script.includes(Buffer.from(source).toString('base64'))); assert.ok(script.includes(digest)); assert.ok(!script.includes(source));
+});
+test('service core sync rejects network, alternate stream and relative paths before UAC', async () => {
+  const client = new ServiceClient({ platform: 'win32', run: () => { throw Error('must not elevate'); } });
+  for (const file of ['relative.exe', '\\\\host\\share\\mihomo.exe', 'C:\\core.exe:stream', 'C:\\bad\nname.exe']) await assert.rejects(client.syncCore(file), /本机 Windows/);
+});
+test('service sync rejects changed confirmation hash before requesting UAC', async () => {
+  const client = new ServiceClient({ platform: 'win32', readCoreDigest: () => 'a'.repeat(64), run: () => { throw Error('must not elevate'); } });
+  await assert.rejects(client.syncCore('C:\\selected.exe', 'b'.repeat(64)), /已更改/);
+  await assert.rejects(client.syncCore('C:\\selected.exe', 'invalid'), /已更改/);
+});
+test('service provider bridge survives denied stop and is replaced only after successful core start', async () => {
+  const events = []; let number = 0, fail = false;
+  const client = new ServiceClient({ createProviderBridge: () => { const id = ++number; return { start: async () => { events.push(`prepare${id}`); return { config: `converted${id}` }; }, dispose: async () => events.push(`dispose${id}`) }; } });
+  client.request = async request => { events.push(request.action + (request.config || '')); if (fail) throw Error('denied'); return { pid: 123 }; };
+  await client.start({ config: 'proxies: []', ownerPid: 123 });
+  fail = true; await assert.rejects(client.stop(), /denied/); assert.ok(!events.includes('dispose1'));
+  await assert.rejects(client.start({ config: 'proxies: []', ownerPid: 123 }), /denied/); assert.ok(events.includes('dispose2')); assert.ok(!events.includes('dispose1'));
+  fail = false; await client.start({ config: 'proxies: []', ownerPid: 123 }); assert.ok(events.indexOf('dispose1') > events.indexOf('startconverted3'));
+  await client.stop(); assert.equal(events.at(-1), 'dispose3');
+});

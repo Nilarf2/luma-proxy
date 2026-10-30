@@ -3,9 +3,16 @@ const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { StringDecoder } = require('node:string_decoder');
+const fs = require('node:fs');
+const crypto = require('node:crypto');
+const { ProviderBridge } = require('./provider-bridge.cjs');
 const runFile = promisify(execFile);
 const SID = /^S-1-5-21-\d+-\d+-\d+-\d+$/;
 function psLiteral(value) { return "'" + String(value).replace(/'/g, "''") + "'"; }
+function coreDigest(binaryPath) {
+  const fd = fs.openSync(binaryPath, 'r');
+  try { const size = fs.fstatSync(fd).size; if (size < 256 || size > 200 * 1024 * 1024) throw Error('内核文件大小无效'); const hash = crypto.createHash('sha256'); const chunk = Buffer.allocUnsafe(1024 * 1024); let count; while ((count = fs.readSync(fd, chunk)) > 0) hash.update(chunk.subarray(0, count)); return hash.digest('hex'); } finally { fs.closeSync(fd); }
+}
 function validateRequest(request) {
   if (!request || !['status', 'start', 'stop', 'logs', 'api'].includes(request.action)) throw Error('服务命令无效');
   if (request.action === 'start' && (typeof request.config !== 'string' || Buffer.byteLength(request.config) > 8 * 1024 * 1024 || !Number.isSafeInteger(request.ownerPid) || request.ownerPid <= 0)) throw Error('服务配置无效');
@@ -14,7 +21,7 @@ function validateRequest(request) {
   return request;
 }
 class ServiceClient {
-  constructor({ resourcesDir = process.resourcesPath || path.join(__dirname, '..', 'resources'), platform = process.platform, run = runFile, connect = net.createConnection } = {}) { this.resourcesDir = resourcesDir; this.platform = platform; this.run = run; this.connect = connect; }
+  constructor({ resourcesDir = process.resourcesPath || path.join(__dirname, '..', 'resources'), platform = process.platform, run = runFile, connect = net.createConnection, readCoreDigest = coreDigest, createProviderBridge = () => new ProviderBridge() } = {}) { this.resourcesDir = resourcesDir; this.platform = platform; this.run = run; this.connect = connect; this.readCoreDigest = readCoreDigest; this.createProviderBridge = createProviderBridge; }
   async ownerSid() {
     if (this.platform !== 'win32') throw Error('服务模式仅支持 Windows');
     if (!this.sid) { const { stdout } = await this.run('whoami.exe', ['/user', '/fo', 'csv', '/nh'], { windowsHide: true, timeout: 10000, maxBuffer: 8192 }); const match = String(stdout).match(/S-1-5-21-\d+-\d+-\d+-\d+/); if (!match || !SID.test(match[0])) throw Error('无法读取 Windows 用户标识'); this.sid = match[0]; }
@@ -32,21 +39,32 @@ class ServiceClient {
   }
   async status() {
     if (this.platform !== 'win32') return { installed: false, running: false, coreRunning: false, pid: null, error: '服务模式仅支持 Windows' };
-    try { return await this.request({ action: 'status' }); }
+    try { const state = await this.request({ action: 'status' }); if (!state.coreRunning && this.providerBridge) { await this.providerBridge.dispose(); this.providerBridge = null; } return state; }
     catch (error) { let installed = false; try { const { stdout } = await this.run('sc.exe', ['query', 'LumaProxyService'], { windowsHide: true, timeout: 10000, maxBuffer: 8192 }); installed = /LumaProxyService/i.test(stdout); } catch {} return { installed, running: false, coreRunning: false, pid: null, error: ['ENOENT', 'ECONNREFUSED'].includes(error.code) ? '' : '无法连接当前用户的 Luma 服务' }; }
   }
-  async elevate(action) {
-    if (!['install', 'uninstall'].includes(action)) throw Error('服务操作无效'); const sid = await this.ownerSid();
+  async elevate(action, extra = []) {
+    if (!['install', 'uninstall', 'sync-core'].includes(action)) throw Error('服务操作无效'); const sid = await this.ownerSid();
     const helper = path.join(this.resourcesDir, 'service', 'Luma.Service.exe');
-    const script = `$ErrorActionPreference='Stop'; $p=Start-Process -FilePath ${psLiteral(helper)} -ArgumentList @('--${action}',${psLiteral(sid)},'${process.pid}') -Verb RunAs -Wait -PassThru; if($p.ExitCode -ne 0){throw 'Luma 服务操作失败，请检查 Windows 权限及安全软件'};`;
+    const args = [`--${action}`, sid, String(process.pid), ...extra].map(psLiteral).join(',');
+    const script = `$ErrorActionPreference='Stop'; $p=Start-Process -FilePath ${psLiteral(helper)} -ArgumentList @(${args}) -Verb RunAs -Wait -PassThru; if($p.ExitCode -ne 0){throw 'Luma 服务操作失败，请检查 Windows 权限及安全软件'};`;
     try { await this.run('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true, timeout: 180000, maxBuffer: 16384 }); } catch { throw Error('服务操作未完成；如已取消权限请求，可以继续使用系统代理模式'); }
     return this.status();
   }
   install() { return this.elevate('install'); }
   uninstall() { return this.elevate('uninstall'); }
-  start({ config, ownerPid = process.pid, providers }) { return this.request({ action: 'start', config, ownerPid, ...(providers === undefined ? {} : { providers }) }); }
-  stop() { return this.request({ action: 'stop' }); }
+  async syncCore(binaryPath, expectedHash) {
+    if (this.platform !== 'win32') throw Error('服务模式仅支持 Windows');
+    if (typeof binaryPath !== 'string' || !path.win32.isAbsolute(binaryPath) || !/^[a-z]:\\[^:\r\n]*$/i.test(binaryPath)) throw Error('请选择本机 Windows 内核文件');
+    const digest = this.readCoreDigest(binaryPath); if (!/^[a-f0-9]{64}$/.test(digest)) throw Error('内核校验无效');
+    if (expectedHash !== undefined && (!/^[a-f0-9]{64}$/.test(expectedHash) || expectedHash !== digest)) throw Error('UAC 前内核已更改，请重新同步');
+    return this.elevate('sync-core', [Buffer.from(binaryPath, 'utf8').toString('base64'), digest]);
+  }
+  async start({ config, ownerPid = process.pid, providers }) {
+    const request = validateRequest({ action: 'start', config, ownerPid, ...(providers === undefined ? {} : { providers }) }); const bridge = this.createProviderBridge();
+    try { const converted = await bridge.start(config); const result = await this.request({ ...request, config: converted.config }); const previous = this.providerBridge; this.providerBridge = bridge; await previous?.dispose(); return result; } catch (error) { await bridge.dispose(); throw error; }
+  }
+  async stop() { const result = await this.request({ action: 'stop' }); await this.providerBridge?.dispose(); this.providerBridge = null; return result; }
   logs() { return this.request({ action: 'logs' }); }
   api(endpoint, method = 'GET', data) { return this.request({ action: 'api', endpoint, method, ...(data === undefined ? {} : { data }) }); }
 }
-module.exports = { ServiceClient, validateRequest, psLiteral };
+module.exports = { ServiceClient, validateRequest, psLiteral, coreDigest };

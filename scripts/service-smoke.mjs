@@ -6,6 +6,7 @@ import path from 'node:path';
 import { once } from 'node:events';
 const require = createRequire(import.meta.url);
 const { ServiceClient } = require('../electron/service.cjs');
+const { coreDigest } = require('../electron/service.cjs');
 if (process.platform !== 'win32') throw Error('Service acceptance requires Windows');
 const ps = source => execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference='Stop'; ${source}`], { encoding: 'utf8', timeout: 30000 }).trim();
 assert.equal(ps("([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)"), 'True', 'CI service smoke requires an elevated isolated runner');
@@ -14,7 +15,8 @@ const client = new ServiceClient({ resourcesDir: path.resolve('resources') });
 assert.equal((await client.status()).installed, false, 'Refuse to touch a pre-existing service');
 assert.equal(ps("@(Get-NetAdapter -Name LumaServiceCI -ErrorAction SilentlyContinue).Count"), '0', 'Refuse to touch a pre-existing test adapter');
 const sid = await client.ownerSid();
-const local = http.createServer((_req, res) => res.end('luma-service-local-ok'));
+let providerRequests = 0;
+const local = http.createServer((req, res) => { if (req.url === '/provider') { assert.equal(req.headers['user-agent'], 'LumaProviderFixture'); providerRequests++; res.end(Buffer.from(`ss://${Buffer.from('aes-128-gcm:local-fixture-password').toString('base64')}@127.0.0.1:12345#Local-provider-node`).toString('base64')); } else res.end('luma-service-local-ok'); });
 local.listen(0, '127.0.0.1'); await once(local, 'listening');
 const base = `mixed-port: 0\nmode: rule\nlog-level: warning\nipv6: false\ndns: {enable: false}\nproxies:\n  - {name: Local fixture, type: http, server: 127.0.0.1, port: ${local.address().port}}\nrules: ['MATCH,Local fixture']\n`;
 const waitFor = async (fn, label) => { const until = Date.now() + 60000; let last; while (Date.now() < until) { try { last = await fn(); if (last) return last; } catch (e) { last = e.message; } await new Promise(r => setTimeout(r, 250)); } throw Error(`${label}: ${JSON.stringify(last)}`); };
@@ -29,6 +31,19 @@ try {
   await assert.rejects(client.api('/configs', 'PUT', { path: 'C:\\Windows\\win.ini' }), /denied|Denied/);
   await client.stop(); assert.equal((await client.status()).coreRunning, false);
   console.log('Protected service install, normal start/stop, controller secret removal and denied reload/upgrade passed');
+  const selectedCore = path.resolve('resources/core/mihomo.exe'), digest = coreDigest(selectedCore), encodedCore = Buffer.from(selectedCore).toString('base64');
+  assert.equal((await client.status()).coreSha256, digest);
+  assert.throws(() => execFileSync(helper, ['--sync-core', sid, String(process.pid), encodedCore, '0'.repeat(64)], { timeout: 60000 }), 'Changed image must not replace protected core');
+  execFileSync(helper, ['--sync-core', sid, String(process.pid), encodedCore, digest], { timeout: 60000 });
+  await waitFor(async () => { const state = await client.status(); return state.running && state.coreSha256 === digest; }, 'protected selected core sync');
+  console.log('Protected core digest, rejected changed image, explicit fixed-target synchronization and service restart passed');
+
+  const withProvider = base + `proxy-providers:\n  Fixture:\n    type: http\n    url: http://127.0.0.1:${local.address().port}/provider\n    interval: 1\n    header: {User-Agent: [LumaProviderFixture]}\n    health-check: {enable: false}\nproxy-groups: [{name: Provider group, type: select, use: [Fixture]}]\n`;
+  await client.start({ config: withProvider, ownerPid: process.pid });
+  await waitFor(async () => (await client.api('/providers/proxies/Fixture')).proxies?.some(p => p.name === 'Local-provider-node'), 'normalized service provider node');
+  await waitFor(() => providerRequests >= 2, 'automatic provider refresh preserves interval and custom header');
+  const beforeRefresh = providerRequests; await client.api('/providers/proxies/Fixture', 'PUT'); assert.ok(providerRequests > beforeRefresh);
+  await client.stop(); console.log('Service URI/base64 provider, custom header, automatic interval and manual refresh passed using loopback fixture');
 
   const tun = base + "tun:\n  enable: true\n  device: LumaServiceCI\n  stack: gvisor\n  auto-route: true\n  auto-detect-interface: true\n  strict-route: false\n  route-address: [198.18.0.0/30]\n";
   // Separate real client owner permits actual process-death acceptance without terminating this harness.
