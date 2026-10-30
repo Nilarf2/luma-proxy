@@ -21,7 +21,7 @@ try{
  const body=await new Promise((resolve,reject)=>http.get({hostname:'127.0.0.1',port:state.port,path:`http://127.0.0.1:${local.address().port}/`,headers:{Host:`127.0.0.1:${local.address().port}`}},res=>{let b='';res.on('data',d=>b+=d);res.on('end',()=>resolve(b));}).on('error',reject));assert.equal(body,'luma-windows-proxy-ok');
  await page.getByRole('button',{name:'断开连接'}).click();await page.getByText('当前未连接',{exact:true}).waitFor();assert.deepEqual(registry(),before);
  await page.getByRole('button',{name:'开启连接'}).click();await page.getByText('安全连接已开启').waitFor();assert.deepEqual(errors,[]);
- await app.close();app=null;assert.deepEqual(registry(),before);console.log('Graceful exit proxy restoration passed');
+ await page.evaluate(()=>window.luma.invoke('settings',{closeToTray:false}));const closed=app.waitForEvent('close');await page.getByRole('button',{name:'关闭',exact:true}).click();await closed;app=null;assert.deepEqual(registry(),before);console.log('Graceful exit proxy restoration passed');
  app=await electron.launch({executablePath:path.resolve('release/win-unpacked/Luma.exe'),args:[`--user-data-dir=${path.join(dir,'data')}`],timeout:60000});
  const crashPage=await app.firstWindow();await crashPage.getByRole('button',{name:'开启连接'}).click();await crashPage.getByText('安全连接已开启').waitFor({timeout:60000});
  console.log('Forced termination test connected');const processHandle=app.process();const exited=new Promise(r=>processHandle.once('exit',r));processHandle.kill('SIGKILL');await exited;app=null;

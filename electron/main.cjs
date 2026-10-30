@@ -22,7 +22,7 @@ async function createWindow() {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', event => event.preventDefault());
   win.webContents.session.setPermissionRequestHandler((_web, _permission, callback) => callback(false));
-  win.on('close', event => { if (!quitting && store.data.closeToTray && tray) { event.preventDefault(); win.hide(); } });
+  win.on('close', event => { if (quitting) return; event.preventDefault(); if (store.data.closeToTray && tray) win.hide(); else app.quit(); });
   win.once('ready-to-show', () => win.show());
   await win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
 }
