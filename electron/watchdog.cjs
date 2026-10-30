@@ -35,8 +35,11 @@ try {
 } catch { Add-Content -LiteralPath $log -Value ($_ | Out-String) }
 try { Get-CimInstance Win32_Process -Filter 'ParentProcessId = ${Number(pid)}' | Where-Object { $_.ExecutablePath -eq $exe } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } } catch { }
 `;
+  const scriptFile=path.join(dir,'recovery-watchdog.ps1');fs.writeFileSync(scriptFile,'\ufeff'+script,'utf8');
   const output=fs.openSync(path.join(dir,'watchdog-output.log'),'a');
-  const watcher = spawn(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { detached: true, stdio: ['ignore',output,output], windowsHide: true });
+  const watcher = spawn(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptFile], { detached: false, stdio: ['ignore',output,output], windowsHide: true });
+  watcher.on('spawn',()=>fs.writeFileSync(path.join(dir,'watchdog-launch.json'),JSON.stringify({pid:watcher.pid,owner:pid})));
+  watcher.on('exit',(code,signal)=>fs.appendFileSync(path.join(dir,'watchdog-output.log'),JSON.stringify({code,signal})));
   watcher.on('error', error => fs.appendFileSync(path.join(dir,'watchdog-output.log'),error.message)); watcher.unref(); fs.closeSync(output);
 }
 module.exports = { startWatchdog };
