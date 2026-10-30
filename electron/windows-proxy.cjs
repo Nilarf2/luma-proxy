@@ -32,4 +32,4 @@ class WindowsProxy {
     fs.unlinkSync(this.file); this.enabled = false;
   }
 }
-module.exports = { WindowsProxy };
+module.exports = { WindowsProxy, ps };
