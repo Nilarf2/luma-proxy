@@ -19,6 +19,25 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
+      - name: Install media helper Rust toolchain
+        run: rustup toolchain install 1.99.1 --profile minimal
+      - name: Verify media helper using loopback fixtures
+        shell: pwsh
+        run: |
+          Get-Content media/upstream/SHA256SUMS.upstream | ForEach-Object {
+            if ($_ -notmatch '^([a-f0-9]{64})  (src/[a-z_]+\.rs)$') { throw 'Invalid source manifest' }
+            $expected = $Matches[1]
+            $source = Join-Path media/upstream $Matches[2]
+            if ((Get-FileHash $source -Algorithm SHA256).Hash.ToLower() -ne $expected) { throw "Upstream media source mismatch: $source" }
+          }
+          cargo +1.99.1 test --locked --manifest-path media/Cargo.toml
+      - name: Build isolated media helper
+        shell: pwsh
+        run: |
+          cargo +1.99.1 build --locked --release --manifest-path media/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force resources/media | Out-Null
+          Copy-Item media/target/release/luma-media.exe resources/media/luma-media.exe
       - name: Verify service request policy
         run: dotnet run --project service/tests/Policy.Tests.csproj -c Release
       - name: Build protected Windows service

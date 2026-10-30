@@ -26,10 +26,10 @@ function networkSignature(interfaces = os.networkInterfaces()) {
 function registerIntegrations(ctx) {
   const { app, dialog, shell, globalShortcut, Notification, getWindow, store, engine, proxy, exclusive, connect, disconnect, publish, handle } = ctx;
   let registered = {}, hotkeyStatus = [], disposed = false, checking = false, lastNetwork = networkSignature(), lastRunning = engine.ready, externalConflict = false;
-  const show = () => { const w = getWindow(); if (!w) return; if (w.isMinimized()) w.restore(); w.show(); w.focus(); };
+  const show = async () => { if (ctx.showWindow) return ctx.showWindow(); const w = getWindow(); if (!w) return; if (w.isMinimized()) w.restore(); w.show(); w.focus(); };
   function notify(title, body = '') { if (store.data.notifications !== false && Notification.isSupported()) new Notification({ title, body }).show(); }
   const callbacks = {
-    show,
+    show: () => show().catch(error => notify('Luma',error.message)),
     toggle: () => exclusive(() => engine.ready ? disconnect() : connect()).catch(e => notify('Luma', e.message)),
     tun: () => ctx.toggleTun ? ctx.toggleTun(!store.data.core.tun.enabled).catch(e => notify('Luma', e.message)) : show()
   };
@@ -53,7 +53,7 @@ function registerIntegrations(ctx) {
   async function acceptLink(value) {
     try {
       const parsed = importLink(value); if (!parsed || disposed) return;
-      show(); const result = await dialog.showMessageBox(getWindow(), { type: 'question', message: '导入订阅？', detail: parsed.host, buttons: ['取消', '导入'], defaultId: 0, cancelId: 0 });
+      await show(); const result = await dialog.showMessageBox(getWindow(), { type: 'question', message: '导入订阅？', detail: parsed.host, buttons: ['取消', '导入'], defaultId: 0, cancelId: 0 });
       if (result.response === 1) { if (!ctx.importUrl) throw Error('订阅导入尚未就绪'); await ctx.importUrl(parsed.url, parsed.name); publish(); }
     } catch (error) { notify('导入失败', error.message); }
   }

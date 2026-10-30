@@ -85,7 +85,7 @@ sealed class Broker : ServiceBase {
                 var output = Encoding.UTF8.GetBytes(result.ToJsonString() + "\n"); await pipe.WriteAsync(output, deadline.Token);
                 // Wait for client close/ack before disconnecting; otherwise Windows may discard unread response bytes.
                 await pipe.ReadAsync(new byte[1], deadline.Token);
-            } catch (OperationCanceledException) when (token.IsCancellationRequested) { break; } catch { /* A malformed/disconnected client must not stop protection. */ } finally { try { if (pipe.IsConnected) pipe.Disconnect(); } catch {} }
+            } catch (OperationCanceledException) when (token.IsCancellationRequested) { break; } catch { /* A malformed/disconnected client must not stop protection. */ } finally { try { pipe.Disconnect(); } catch {} }
         }
     }
     async Task<JsonNode?> Dispatch(JsonObject req, int clientPid, CancellationToken token) {

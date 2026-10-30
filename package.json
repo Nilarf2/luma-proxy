@@ -51,6 +51,10 @@
         "to": "service"
       },
       {
+        "from": "resources/media",
+        "to": "media"
+      },
+      {
         "from": "resources/icon.png",
         "to": "icon.png"
       },

@@ -11,3 +11,6 @@ test-results/
 service/**/bin/
 service/**/obj/
 resources/service/
+
+media/target/
+resources/media/

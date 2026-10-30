@@ -45,6 +45,10 @@ try {
   await waitFor(async () => !(await client.status()).coreRunning, 'owner death stops privileged core');
   await waitFor(() => ps("@(Get-NetAdapter -Name LumaServiceCI -ErrorAction SilentlyContinue).Count") === '0', 'TUN adapter removed after owner death');
   console.log('Real Windows TUN adapter, confined route, local-only TUN HTTP forwarding, owner isolation and actual owner process-death cleanup passed');
+} catch (error) {
+  // Ephemeral CI machine only: no configuration/controller credentials are printed.
+  try { console.error('Service failure diagnostics:', ps("$service=Get-Service LumaProxyService -ErrorAction SilentlyContinue | Select-Object Name,Status; $processes=Get-Process -Name Luma.Service,mihomo -ErrorAction SilentlyContinue | Select-Object ProcessName,Id,StartTime; $events=Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddMinutes(-10)} -ErrorAction SilentlyContinue | Where-Object {$_.ProviderName -in @('LumaProxyService','.NET Runtime','Application Error')} | Select-Object -First 5 TimeCreated,ProviderName,@{n='Message';e={$_.Message.Substring(0,[Math]::Min(2000,$_.Message.Length))}}; @{service=$service;processes=$processes;events=$events}|ConvertTo-Json -Depth 4")); } catch (diagnosticError) { console.error('OS diagnostics unavailable:', diagnosticError.message); }
+  throw error;
 } finally {
   if (owner?.exitCode === null) { try { execFileSync('taskkill.exe', ['/PID', String(owner.pid), '/F']); } catch {} }
   if (installed) { try { await client.stop(); } catch {} execFileSync(helper, ['--uninstall', sid, String(process.pid)], { timeout: 60000 }); assert.equal((await client.status()).installed, false); }

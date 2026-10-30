@@ -8,6 +8,9 @@ const { Engine } = require('./engine.cjs');
 const { parseOverride } = require('./profile.cjs');
 const { validateSettingsPatch } = require('./settings.cjs');
 const { registerProfiles } = require('./profiles.cjs');
+const { registerMedia } = require('./media.cjs');
+const { registerIcons } = require('./icons.cjs');
+const { memorySampler } = require('./memory.cjs');
 const { isAdministrator, elevate } = require('./privilege.cjs');
 const { prepareProfile, providerFiles } = require('./compose.cjs');
 const { ServiceClient } = require('./service.cjs');
@@ -15,7 +18,7 @@ const { PacServer, pacScript } = require('./pac.cjs');
 const { registerMaintenance } = require('./maintenance.cjs');
 const { registerIntegrations } = require('./integrations.cjs');
 const { WindowsProxy, ps } = require('./windows-proxy.cjs');
-let win, tray, store, engine, proxy, diagnostics, maintenance, integrations, profiles, pac, recoveryBinary, quitting = false, busy = false, lastError = '', recoveryHandle = null, recoveryTask = null, admin = false, privilegeReady, service = null, serviceStatus = { installed: false, running: false };
+let win, windowTask, sampleMemory, media, icons, trayImageKey, tray, store, engine, proxy, diagnostics, maintenance, integrations, profiles, pac, recoveryBinary, quitting = false, busy = false, lastError = '', recoveryHandle = null, recoveryTask = null, admin = false, privilegeReady, service = null, serviceStatus = { installed: false, running: false };
 async function ensureRecovery() {
   if (quitting) throw Error('Luma 正在退出');
   if (recoveryTask) return recoveryTask;
@@ -34,12 +37,14 @@ async function ensureRecovery() {
   try { await recoveryTask; } finally { recoveryTask = null; }
 }
 if (!app.requestSingleInstanceLock()) app.quit();
-app.on('second-instance', () => { win?.show(); win?.focus(); });
+app.on('second-instance', () => { if (store) showWindow().catch(() => {}); });
+app.on('activate', () => { if (store) showWindow().catch(() => {}); });
 const asset = name => app.isPackaged ? path.join(process.resourcesPath, name) : path.join(__dirname, '..', 'resources', name);
-const snapshot = () => ({ ...store.publicData(), ...maintenance?.snapshot(), ...integrations?.snapshot(), running: engine.ready, systemProxy: proxy.enabled, busy, lastError, port: engine.ready ? engine.port : null, version: app.getVersion(), health: diagnostics.state, tunRunning: engine.tunRunning, privilege: { admin, platform: process.platform }, service: serviceStatus, coreVersion: engine.version || null });
+const snapshot = () => ({ ...store.publicData(), ...maintenance?.snapshot(), ...integrations?.snapshot(), ...icons?.snapshot(), running: engine.ready, systemProxy: proxy.enabled, busy, lastError, port: engine.ready ? engine.port : null, version: app.getVersion(), health: diagnostics.state, tunRunning: engine.tunRunning, privilege: { admin, platform: process.platform }, service: serviceStatus, coreVersion: engine.version || null });
 function publish() { if (quitting) return; if (win && !win.isDestroyed()) win.webContents.send('state', snapshot()); updateTray(); }
 async function exclusive(fn) { if (busy) throw Error('正在处理上一项操作，请稍候'); busy = true; publish(); try { lastError = ''; return await fn(); } catch(e) { lastError = e.message; throw e; } finally { busy = false; publish(); } }
 async function disconnect() {
+  media?.dispose();
   let failure;
   try { await proxy.restore(); } catch (error) { failure = error; }
   try { await pac?.stop(); } catch (error) { failure ||= error; }
@@ -93,11 +98,13 @@ async function updateSettings(payload) {
 }
 function updateTray() {
   if (!tray) return;
+  const imageKey = icons?.trayKey();
+  if (trayImageKey !== imageKey) { const image = nativeImage.createFromPath(icons?.trayPath() || asset('icon.png')); if (!image.isEmpty()) tray.setImage(image.resize({width:24,height:24})); trayImageKey = imageKey; }
   const action = fn => () => exclusive(fn).catch(() => publish());
   const groups = (engine.lastGroups || []).filter(g => g.type === 'Selector').slice(0, 20).map(group => ({label: group.name, submenu: group.nodes.slice(0, 100).map(node => ({label: node.name, type:'radio',checked:group.now===node.name,enabled:engine.ready&&!busy,click:action(async()=>{await engine.api(`/proxies/${encodeURIComponent(group.name)}`,'PUT',{name:node.name});group.now=node.name;})}))}));
   tray.setToolTip(`Luma · ${engine.ready ? (proxy.enabled ? '已连接' : '内核运行中') : '未连接'}`);
   tray.setContextMenu(Menu.buildFromTemplate([
-    {label:'打开 Luma',click:()=>{win.show();win.focus();}},
+    {label:'打开 Luma',click:()=>showWindow().catch(()=>{})},
     {label:engine.ready?'断开连接':'连接',enabled:!busy&&!!store.data.activeId,click:action(()=>engine.ready?disconnect():connect())},
     {label:'TUN',type:'checkbox',checked:store.data.core.tun.enabled,enabled:!busy,click:item=>exclusive(()=>updateSettings({core:{tun:{enabled:item.checked}}})).catch(()=>publish())},
     {label:'代理模式',submenu:[['rule','规则'],['global','全局'],['direct','直连']].map(([mode,label])=>({label,type:'radio',checked:store.data.mode===mode,enabled:!busy,click:action(async()=>{if(engine.ready)await engine.api('/configs','PATCH',{mode});store.data.mode=mode;store.save();})}))},
@@ -106,14 +113,27 @@ function updateTray() {
     {type:'separator'},{label:'退出 Luma',click:()=>app.quit()}
   ]));
 }
-async function createWindow() {
-  win = new BrowserWindow({ width: 1180, height: 800, minWidth: 940, minHeight: 690, title: 'Luma', backgroundColor: '#ffffff', frame: false, show: false, icon: asset('icon.png'), webPreferences: { preload: path.join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true } });
-  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  win.webContents.on('will-navigate', event => event.preventDefault());
-  win.webContents.session.setPermissionRequestHandler((_web, _permission, callback) => callback(false));
-  win.on('close', event => { if (quitting) return; event.preventDefault(); if (store.data.closeToTray && tray) win.hide(); else app.quit(); });
-  win.once('ready-to-show', () => { if (!store.data.startMinimized || !tray) win.show(); });
-  await win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
+async function ensureWindow(initial = false) {
+  if (quitting) return null;
+  if (windowTask) return windowTask;
+  if (win && !win.isDestroyed()) return win;
+  windowTask = (async () => { await createWindow(initial); return win; })();
+  try { return await windowTask; } finally { windowTask = null; }
+}
+async function showWindow() {
+  const window = await ensureWindow(); if (!window || window.isDestroyed()) return;
+  if (window.isMinimized()) window.restore(); window.show(); window.focus();
+}
+async function createWindow(initial = false) {
+  const window = new BrowserWindow({ width: 1180, height: 800, minWidth: 940, minHeight: 690, title: 'Luma', backgroundColor: '#ffffff', frame: false, show: false, icon: asset('icon.png'), webPreferences: { preload: path.join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true } });
+  win = window;
+  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  window.webContents.on('will-navigate', event => event.preventDefault());
+  window.webContents.session.setPermissionRequestHandler((_web, _permission, callback) => callback(false));
+  window.on('close', event => { if (quitting) return; event.preventDefault(); if (store.data.closeToTray && tray) { if (store.data.lightweightMode) window.destroy(); else window.hide(); } else app.quit(); });
+  window.on('closed', () => { if (win === window) win = null; });
+  window.once('ready-to-show', () => { if (!initial || !store.data.startMinimized || !tray) window.show(); });
+  await window.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
 }
 function handle(name, fn) { ipcMain.handle(name, async (event, payload) => { if (event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame) return { ok: false, error: '请求来源无效' }; try { return { ok: true, data: await fn(payload) }; } catch(e) { return { ok: false, error: e.message }; } }); }
 app.whenReady().then(async () => {
@@ -127,6 +147,9 @@ app.whenReady().then(async () => {
   const coreJournal = path.join(store.dir, 'core-recovery.json');
   engine.onSpawn = async pid => { if (process.platform !== 'win32') return; if (!Number.isInteger(pid) || pid <= 0) throw Error('无法取得内核进程'); const coreStarted = await ps(`(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToFileTimeUtc().ToString()`, 5000); fs.writeFileSync(coreJournal, JSON.stringify({ ownerPid: process.pid, corePid: pid, coreStarted, binary: engine.binary }), { mode: 0o600 }); };
   engine.onStop = async () => { if (fs.existsSync(coreJournal)) { const record = JSON.parse(fs.readFileSync(coreJournal, 'utf8')); if (record.ownerPid === process.pid) fs.rmSync(coreJournal, { force: true }); } };
+  media = registerMedia({handle,engine,asset});
+  icons = registerIcons({handle,dialog,getWindow:()=>win,store,publish,nativeImage});
+  sampleMemory = memorySampler({app,getWindow:()=>win,getCorePid:()=>engine.child?.pid});
   diagnostics = new Diagnostics({ platform: process.platform, binary: engine.binary, ensureRecovery, inspectProxy: () => proxy.inspect(), getLoginSettings: () => app.getLoginItemSettings(), launchAtLogin: () => store.data.launchAtLogin, portable: !!process.env.PORTABLE_EXECUTABLE_DIR, onChange: publish });
   handle('state', snapshot);
   handle('health:check', () => { diagnostics.options.binary = engine.binary; return diagnostics.run(); });
@@ -136,7 +159,7 @@ app.whenReady().then(async () => {
   handle('profile:delete', id => exclusive(async () => { const p = store.data.profiles.find(p => p.id === id); if (!p) throw Error('订阅不存在'); if (store.data.profiles.some(source => (source.sourceIds || []).includes(id))) throw Error('此配置被其他配置合并引用，请先移除引用'); const result = await dialog.showMessageBox(win, { type: 'question', buttons: ['取消', '移除'], defaultId: 0, cancelId: 0, message: `移除「${p.name}」？`, detail: '只移除本地配置，不影响订阅服务。' }); if (result.response !== 1) return; if (id === store.data.activeId) { await disconnect(); store.data.activeId = store.data.profiles.find(p => p.id !== id)?.id || null; } store.data.profiles = store.data.profiles.filter(p => p.id !== id); fs.rmSync(store.profilePath(id), { force: true }); store.save(); }));
   handle('mode', mode => exclusive(async () => { if (!['rule', 'global', 'direct'].includes(mode)) throw Error('模式无效'); if (engine.ready) await engine.api('/configs', 'PATCH', { mode }); store.data.mode = mode; store.save(); }));
   handle('systemProxy', enabled => exclusive(async () => { if (typeof enabled !== 'boolean') throw Error('参数无效'); if (enabled) { await ensureRecovery(); if (!engine.ready) throw Error('请先连接'); const pacUrl = store.data.core.proxyMode === 'pac' ? await pac.start(engine.port, store.data.core.pacScript) : undefined; await proxy.enable(engine.port, engine.serviceMode ? undefined : engine.child?.pid, store.data.core.bypass, {pacUrl}); } else { await proxy.restore(); await pac.stop(); } }));
-  handle('stats', async () => { const result = await engine.stats(); if (JSON.stringify(engine.lastGroups) !== JSON.stringify(result.groups)) { engine.lastGroups = result.groups; updateTray(); } return result; });
+  handle('stats', async () => { const result = await engine.stats(); result.memory = await sampleMemory(); if (JSON.stringify(engine.lastGroups) !== JSON.stringify(result.groups)) { engine.lastGroups = result.groups; updateTray(); } return result; });
   handle('node:select', async ({ group, name }) => { if (!engine.ready) throw Error('请先连接'); const data = await engine.api('/proxies'); if (data.proxies[group]?.type !== 'Selector' || !data.proxies[group].all.includes(name)) throw Error('此策略组不支持手动切换'); await engine.api(`/proxies/${encodeURIComponent(group)}`, 'PUT', { name }); });
   async function delayNode(payload) { const value = typeof payload === 'string' ? { name: payload } : payload; if (!engine.ready || typeof value?.name !== 'string' || value.name.length > 1024) throw Error('请先连接'); const checked = validateSettingsPatch(store.data, {latency:{url:value.url ?? store.data.latency.url, timeout:value.timeout ?? store.data.latency.timeout}}).latency; return engine.api(`/proxies/${encodeURIComponent(value.name)}/delay?timeout=${checked.timeout}&url=${encodeURIComponent(checked.url)}`); }
   handle('node:delay', delayNode);
@@ -158,15 +181,15 @@ app.whenReady().then(async () => {
   handle('service:uninstall', () => exclusive(async () => { if (!service) throw Error('当前平台不支持服务'); await disconnect(); await service.uninstall(); serviceStatus = await service.status(); }));
   handle('window', action => { if (action === 'minimize') win.minimize(); else if (action === 'maximize') win.isMaximized() ? win.unmaximize() : win.maximize(); else if (action === 'close') win.close(); else if (action === 'quit') app.quit(); });
   maintenance = registerMaintenance({ handle, app, dialog, shell, getWindow: () => win, store, engine, exclusive, disconnect, publish, asset, isBusy:()=>busy, isQuitting:()=>quitting, applySettings:()=>integrations?.applySettings(store.data) });
-  integrations = registerIntegrations({ handle, app, dialog, shell, globalShortcut, Notification, getWindow: () => win, store, engine, proxy, exclusive, connect, disconnect, publish, importUrl: (url, name) => profiles.importUrl(url, name), toggleTun: enabled => updateSettings({ core: { tun: { enabled } } }), isBusy: () => busy, isQuitting: () => quitting });
+  integrations = registerIntegrations({ handle, app, dialog, shell, globalShortcut, Notification, getWindow: () => win, showWindow, store, engine, proxy, exclusive, connect, disconnect, publish, importUrl: (url, name) => profiles.importUrl(url, name), toggleTun: enabled => updateSettings({ core: { tun: { enabled } } }), isBusy: () => busy, isQuitting: () => quitting });
   await integrations.applySettings(store.data).catch(error => { lastError = error.message; });
   privilegeReady = isAdministrator().then(value => { admin = value; }).catch(() => { admin = false; });
-  tray = new Tray(nativeImage.createFromPath(asset('icon.png')).resize({ width: 24, height: 24 })); tray.on('double-click', () => { win.show(); win.focus(); }); updateTray(); await createWindow();
+  tray = new Tray(nativeImage.createFromPath(asset('icon.png')).resize({ width: 24, height: 24 })); tray.on('double-click', () => showWindow().catch(() => {})); updateTray(); await ensureWindow(true);
   await privilegeReady;
   if (service) serviceStatus = await service.status().catch(() => ({ installed: false, running: false }));
   publish();
   if (store.data.startupCheck) diagnostics.run().catch(() => {});
   if (store.data.autoConnect && store.data.activeId) exclusive(connect).catch(() => {});
 }).catch(err => { dialog.showErrorBox('Luma 启动失败', err.message); app.exit(1); });
-app.on('before-quit', event => { if (quitting) return; event.preventDefault(); if (busy) { win?.show(); return; } quitting = true; profiles?.dispose(); maintenance?.dispose(); integrations?.dispose(); (async () => { try { await disconnect(); } catch(e) { dialog.showErrorBox('请检查系统代理', '无法自动恢复 Windows 代理设置，请在系统设置中关闭代理后退出。'); } finally { await recoveryTask?.catch(() => {}); app.quit(); } })(); });
+app.on('before-quit', event => { if (quitting) return; event.preventDefault(); if (busy) { showWindow().catch(() => {}); return; } quitting = true; media?.dispose(); profiles?.dispose(); maintenance?.dispose(); integrations?.dispose(); (async () => { try { await disconnect(); } catch(e) { dialog.showErrorBox('请检查系统代理', '无法自动恢复 Windows 代理设置，请在系统设置中关闭代理后退出。'); } finally { await recoveryTask?.catch(() => {}); app.quit(); } })(); });
 app.on('window-all-closed', () => { if (!tray) app.quit(); });

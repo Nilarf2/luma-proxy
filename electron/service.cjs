@@ -2,6 +2,7 @@ const net = require('node:net');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
+const { StringDecoder } = require('node:string_decoder');
 const runFile = promisify(execFile);
 const SID = /^S-1-5-21-\d+-\d+-\d+-\d+$/;
 function psLiteral(value) { return "'" + String(value).replace(/'/g, "''") + "'"; }
@@ -22,10 +23,10 @@ class ServiceClient {
   async request(request) {
     validateRequest(request); const sid = await this.ownerSid(); const message = JSON.stringify(request) + '\n';
     return new Promise((resolve, reject) => {
-      const socket = this.connect(`\\\\.\\pipe\\Luma.Proxy.${sid}`); let output = '', settled = false;
-      const finish = (error, result) => { if (settled) return; settled = true; socket.destroy(); error ? reject(error) : resolve(result); };
+      const socket = this.connect(`\\\\.\\pipe\\Luma.Proxy.${sid}`); const decoder = new StringDecoder('utf8'); let output = '', size = 0, settled = false;
+      const finish = (error, result, received = false) => { if (settled) return; settled = true; if (received) { socket.end('\n'); socket.setTimeout(1000, () => socket.destroy()); } else socket.destroy(); error ? reject(error) : resolve(result); };
       socket.setTimeout(35000, () => finish(Error('服务响应超时'))); socket.on('error', error => finish(error)); socket.on('connect', () => socket.write(message));
-      socket.on('data', bytes => { output += bytes.toString('utf8'); if (Buffer.byteLength(output) > 12 * 1024 * 1024) return finish(Error('服务响应过大')); const index = output.indexOf('\n'); if (index < 0) return; try { const result = JSON.parse(output.slice(0, index)); if (result.ok !== true) return finish(Error(result.error || '服务请求失败')); finish(null, result.data); } catch { finish(Error('服务响应无效')); } });
+      socket.on('data', bytes => { size += bytes.length; output += decoder.write(bytes); if (size > 12 * 1024 * 1024) return finish(Error('服务响应过大')); const index = output.indexOf('\n'); if (index < 0) return; try { const result = JSON.parse(output.slice(0, index)); if (result.ok !== true) return finish(Error(result.error || '服务请求失败'), null, true); finish(null, result.data, true); } catch { finish(Error('服务响应无效')); } });
       socket.on('end', () => { if (!settled) finish(Error('服务连接意外关闭')); });
     });
   }

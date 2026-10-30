@@ -35,7 +35,7 @@ try {
       if (channel === 'settings') { Object.assign(state, payload); publish(); }
       if (channel === 'systemProxy') { state.systemProxy = payload; publish(); }
       if (channel === 'tun') { state.core.tun.enabled = payload; state.tunRunning = payload && state.running; publish(); }
-      if (channel === 'stats') return { upload: 1024, download: 4096, connections, groups: [{ name: 'Proxy', type: 'Selector', now: node, nodes: [{ name: 'Tokyo 01', type: 'Trojan', delay: 31 }, { name: 'Singapore 02', type: 'SS', delay: 80 }] }] };
+      if (channel === 'stats') return { upload: 1024, download: 4096, memory: { main: 1000000, renderer: 2000000, total: 3000000, core: null }, connections, groups: [{ name: 'Proxy', type: 'Selector', now: node, nodes: [{ name: 'Tokyo 01', type: 'Trojan', delay: 31 }, { name: 'Singapore 02', type: 'SS', delay: 80 }] }] };
       if (channel === 'node:select') node = payload.name;
       if (channel === 'node:delay') return { delay: 42 };
       if (channel === 'connections:close') connections = connections.filter(c => c.id !== payload);
@@ -45,8 +45,13 @@ try {
       if (channel === 'profile:get') return { text: 'proxies: []\nrules: []\n', override: '', script: '', sourceIds: [] };
       if (channel === 'profile:save') { Object.assign(state.profiles.find(p => p.id === payload.id), payload); publish(); }
       if (channel === 'rules') return { rules: [{ type: 'DOMAIN', payload: 'example.com', proxy: 'Proxy' }], providers: { rules: { basic: { updatedAt: '2026-10-30T08:00:00Z' } }, proxies: {} } };
+      if (channel === 'media:list') return [{ name: 'Netflix', status: 'Pending', region: null, check_time: null }, { name: 'ChatGPT Web', status: 'Pending', region: null, check_time: null }];
+      if (channel === 'media:check') { await new Promise(resolve => { window.__cancelMedia = resolve; setTimeout(resolve, 500); }); return [{ name: 'Netflix', status: 'Yes', region: 'US', check_time: new Date().toISOString() }, { name: 'ChatGPT Web', status: 'No', region: null, check_time: new Date().toISOString() }]; }
+      if (channel === 'media:cancel') window.__cancelMedia?.();
       if (channel === 'os:uwp-list') return [{ name: 'Test UWP', sid: 'S-1-test', enabled: window.__uwpEnabled || false }];
       if (channel === 'os:uwp-set') window.__uwpEnabled = payload.enabled;
+      if (channel === 'icons:import') { state.icons ||= { tray: null, groups: {} }; const image = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='; if (payload.kind === 'tray') state.icons.tray = image; else state.icons.groups[payload.name] = image; publish(); }
+      if (channel === 'icons:reset') { if (payload.kind === 'tray') state.icons.tray = null; else delete state.icons.groups[payload.name]; publish(); }
       if (channel === 'service:status') return state.service || { installed: false, running: false };
       if (channel === 'service:install') { state.service = { installed: true, running: true }; publish(); }
       if (channel === 'service:uninstall') { state.service = { installed: false, running: false }; publish(); }
@@ -81,6 +86,12 @@ try {
   await nav('代理节点').click();
   await page.getByRole('button', { name: /Singapore 02/ }).click();
   await page.locator('.node-row.selected').filter({ hasText: 'Singapore 02' }).waitFor();
+  await page.getByText('策略组图标', { exact: true }).click();
+  await page.getByRole('button', { name: '选择图标', exact: true }).click();
+  await called('icons:import', payload => payload.kind === 'group' && payload.name === 'Proxy');
+  await page.locator('.group-icon').waitFor();
+  await page.getByRole('button', { name: '重置图标', exact: true }).click();
+  await called('icons:reset', payload => payload.kind === 'group');
   await page.getByRole('button', { name: '测试延迟' }).click();
   await page.getByText('42 ms').first().waitFor();
   await nav('活动连接').click();
@@ -146,6 +157,34 @@ try {
   await page.getByText('暂无日志', { exact: true }).waitFor();
 
   await nav('设置').click();
+  assert.equal(await page.getByRole('switch', { name: '流量与内存记录', exact: true }).getAttribute('aria-checked'), 'false');
+  await page.getByRole('button', { name: '选择托盘图标', exact: true }).click();
+  await page.getByAltText('自定义托盘图标').waitFor();
+  await called('icons:import', payload => payload.kind === 'tray');
+  await page.getByRole('button', { name: '重置托盘图标', exact: true }).click();
+  await called('icons:reset', payload => payload.kind === 'tray');
+  await page.getByRole('switch', { name: '流量与内存记录', exact: true }).click();
+  await called('settings', payload => payload.appearance?.showTrafficHistory === true);
+  await nav('概览').click();
+  await page.getByText('运行记录', { exact: true }).click();
+  await page.getByRole('img', { name: '下载与上传速度记录', exact: true }).waitFor();
+  assert.equal(await page.getByText('内核内存 —', { exact: true }).count(), 1);
+  await nav('设置').click();
+  await page.getByRole('switch', { name: '流量与内存记录', exact: true }).click();
+  await called('settings', payload => payload.appearance?.showTrafficHistory === false);
+  await page.getByRole('switch', { name: '关闭窗口时释放界面内存', exact: true }).click();
+  await called('settings', payload => payload.lightweightMode === true);
+  await page.getByText('媒体检测', { exact: true }).click();
+  await called('media:list');
+  assert.equal(await page.evaluate(() => window.__calls.filter(call => call.channel === 'media:check').length), 0);
+  const media = page.locator('.media-checks');
+  await media.getByRole('button', { name: '测试', exact: true }).first().click();
+  await called('media:check', payload => payload.check === 'Netflix');
+  await media.getByText('可用 · US', { exact: true }).waitFor();
+  await media.getByRole('button', { name: '测试全部', exact: true }).click();
+  await media.getByRole('button', { name: '取消检测', exact: true }).click();
+  await called('media:cancel');
+  await called('media:check', payload => !payload.check);
   await page.getByLabel('外观模式', { exact: true }).selectOption('dark');
   await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
   await called('settings', payload => payload.appearance?.mode === 'dark');
@@ -248,6 +287,9 @@ try {
   await called('core:import');
   await page.getByRole('button', { name: '恢复内置内核', exact: true }).click();
   await called('core:reset');
+  await page.getByRole('button', { name: '安装服务', exact: true }).click();
+  await page.getByRole('button', { name: '同步服务内核', exact: true }).click();
+  await called('service:sync-core');
   await page.getByRole('button', { name: '安装更新', exact: true }).click();
   await called('app:install-update');
   for (const width of [940, 1180, 1440]) { await page.setViewportSize({ width, height: 850 }); assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `No settings overflow at ${width}`); await nav('概览').click(); assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `No overview overflow at ${width}`); await nav('设置').click(); }
