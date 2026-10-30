@@ -84,7 +84,7 @@ try {
   execFileSync('taskkill.exe', ['/PID', String(oldWatcher.pid), '/F'], { encoding: 'utf8' });
   const repaired = await page.evaluate(() => window.luma.invoke('health:check'));
   completedHealth(repaired);
-  assert.equal(item(repaired, 'recovery').status, 'ok');
+  assert.equal(item(repaired, 'recovery').status, 'ok', `Recovery check after idle watcher termination: ${JSON.stringify(repaired)}`);
   const replacement = await readWatcher();
   assert.notEqual(replacement.pid, oldWatcher.pid, 'Diagnostic should replace a stopped recovery watcher');
   assert.equal((await readState(page)).running, false);

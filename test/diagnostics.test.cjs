@@ -82,6 +82,53 @@ test('watchdog liveness requires the ready token and original process start iden
   assert.equal(calls, 2);
   assert.equal(await checkWatchdog({ ...handle, pid: -1 }), false);
 });
+test('missing watchdog returns false while PowerShell failures remain fail closed', async () => {
+  let blocked = false;
+  const context = { module: { exports: {} }, Buffer, process, setTimeout, require: name => name === './windows-proxy.cjs' ? { ps: async () => { if (blocked) throw Error('PowerShell blocked'); return ''; } } : name === 'node:fs' ? { readFileSync: () => 'token' } : require(name) };
+  vm.runInNewContext(fs.readFileSync(path.resolve('electron/watchdog.cjs'), 'utf8'), context);
+  const handle = { pid: 123, readyFile: 'unused', token: 'token', started: '987654321' };
+  assert.equal(await context.module.exports.checkWatchdog(handle), false);
+  blocked = true;
+  await assert.rejects(context.module.exports.checkWatchdog(handle), /PowerShell blocked/);
+});
+test('recovery gate restarts a missing watchdog and rejects unavailable process inspection', async () => {
+  let starts = 0, blocked = false;
+  const old = { pid: 123 }, replacement = { pid: 456 };
+  const app = { requestSingleInstanceLock: () => true, on: () => {}, whenReady: () => ({ then: () => ({ catch: () => {} }) }) };
+  const context = { module: { exports: {} }, __dirname: path.resolve('electron'), process: { pid: 999 }, require: name => name === 'electron' ? { app } : name === './watchdog.cjs' ? { checkWatchdog: async handle => { if (blocked) throw Error('PowerShell blocked'); return handle === replacement; }, startWatchdog: async () => { starts++; return replacement; } } : name.startsWith('./') ? {} : require(name) };
+  vm.runInNewContext(fs.readFileSync(path.resolve('electron/main.cjs'), 'utf8') + '\nmodule.exports={ensureRecovery,initialize:handle=>{store={dir:"unused"};recoveryHandle=handle;}};', context);
+  context.module.exports.initialize(old);
+  await context.module.exports.ensureRecovery();
+  assert.equal(starts, 1);
+  await context.module.exports.ensureRecovery();
+  assert.equal(starts, 1);
+  blocked = true;
+  await assert.rejects(context.module.exports.ensureRecovery(), /PowerShell blocked/);
+  assert.equal(starts, 1);
+});
+test('Windows process lifetime probe accepts live PID and treats terminated PID as absent', { skip: process.platform !== 'win32', timeout: 15000 }, async () => {
+  const { spawn } = require('node:child_process');
+  const { once } = require('node:events');
+  const { checkWatchdog } = require('../electron/watchdog.cjs');
+  const { ps } = require('../electron/windows-proxy.cjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'luma-watchdog-lifetime-'));
+  const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { windowsHide: true, stdio: 'ignore' });
+  try {
+    await once(child, 'spawn');
+    const started = await ps(`(Get-Process -Id ${child.pid} -ErrorAction Stop).StartTime.ToFileTimeUtc().ToString()`, 5000);
+    const handle = { pid: child.pid, started, readyFile: path.join(dir, 'ready'), token: 'test-token' };
+    fs.writeFileSync(handle.readyFile, handle.token);
+    assert.equal(await checkWatchdog(handle), true);
+    const exited = once(child, 'exit');
+    child.kill();
+    await exited;
+    // The stale ready token deliberately remains, as after forced termination.
+    assert.equal(await checkWatchdog(handle), false);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 test('watchdog fallback clears a failed ready marker and verifies native process identity', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'luma-watchdog-fallback-'));
   try {

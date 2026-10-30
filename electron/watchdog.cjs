@@ -130,7 +130,10 @@ async function checkWatchdog(handle) {
   if (!handle || !Number.isInteger(handle.pid) || handle.pid <= 0 || !/^\d+$/.test(handle.started)) return false;
   try { if (fs.readFileSync(handle.readyFile, 'utf8') !== handle.token) return false; }
   catch (error) { if (error.code === 'ENOENT') return false; throw error; }
-  const started = await ps(`$p=Get-Process -Id ${handle.pid} -ErrorAction SilentlyContinue; if($null -ne $p){$p.StartTime.ToFileTimeUtc().ToString()}`, 5000);
+  // SilentlyContinue still leaves powershell.exe with exit code 1 for a missing
+  // PID. Treat only that expected lookup failure as absence; access failures,
+  // blocked PowerShell and timeouts must continue to prevent proxy activation.
+  const started = await ps(`$ErrorActionPreference='Stop'; try { $p=Get-Process -Id ${handle.pid} -ErrorAction Stop } catch { if($_.FullyQualifiedErrorId -like 'NoProcessFoundForGivenId,*') { exit 0 }; throw }; $p.StartTime.ToFileTimeUtc().ToString()`, 5000);
   return started === handle.started;
 }
 module.exports = { startWatchdog, checkWatchdog };
