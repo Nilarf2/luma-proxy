@@ -4,13 +4,13 @@ Audit date: 2026-10-30. This compares official Clash Verge Rev **v2.5.8** (2026-
 
 Official references: [release](https://github.com/clash-verge-rev/clash-verge-rev/releases/tag/v2.5.8), [configuration model](https://github.com/clash-verge-rev/clash-verge-rev/blob/v2.5.8/src-tauri/src/config/verge.rs), [profile model](https://github.com/clash-verge-rev/clash-verge-rev/blob/v2.5.8/src/types/global.d.ts), [profile import](https://www.clashverge.dev/guide/profile.html), [extensions](https://www.clashverge.dev/guide/extend.html), [URL schemes and subscription headers](https://www.clashverge.dev/guide/url_schemes.html), [Windows/service guidance](https://www.clashverge.dev/faq/windows.html), [hotkeys](https://github.com/clash-verge-rev/clash-verge-rev/blob/v2.5.8/src-tauri/src/core/hotkey.rs), [themes](https://www.clashverge.dev/guide/css_injection.html).
 
-`Implemented` means application controls and backend behavior exist; it does not mean every native interaction passed. `Partial` identifies an actual remaining difference. Verification below names local evidence and Windows checks still pending.
+`Implemented` means application controls and backend behavior exist; it does not mean every native interaction passed. `Partial` identifies an actual remaining difference. Verification below names local evidence, the successful Windows CI run and remaining manual checks.
 
 | Capability in CVR | Luma 0.2.0 Windows x64 | Verification / remaining acceptance |
 | --- | --- | --- |
 | Bundled Mihomo | Implemented | Real-core local integration; packaged Windows connect/exit gate |
-| TUN stacks, DNS hijack, routes and interfaces | Implemented | Windows adapter and confined route observed; corrected local TCP forwarding/owner-death fixture awaiting rerun |
-| Persistent privileged Windows service | Implemented | Windows install/start/stop/private controller passed; same-SID restricted-token TUN gate added, awaiting rerun |
+| TUN stacks, DNS hijack, routes and interfaces | Implemented | Real Windows adapter, confined route, local-only TCP forwarding and owner-death cleanup passed; DNS variants remain configuration-level coverage |
+| Persistent privileged Windows service | Implemented | Windows install/start/stop/private controller and same-SID Basic User token with Administrator role false passed |
 | Administrator TUN fallback | Implemented | Privilege snapshot and fail-closed engine checks; explicit elevated desktop interaction pending |
 | System proxy and previous-setting restoration | Implemented | Registry recovery, watchdog repair, forced termination in packaged Windows gate |
 | System proxy guard | Implemented | Ownership-aware reapply; unit lifecycle tests, native opt-in interaction pending |
@@ -25,7 +25,7 @@ Official references: [release](https://github.com/clash-verge-rev/clash-verge-re
 | Visual rule/node/group editing | Implemented | Structured editor add/reorder/delete; generated-config and UI checks |
 | Profile-specific overrides and composition | Implemented | Source ordering, name conflicts, YAML/script layering tested |
 | Selector/URLTest/Fallback/LoadBalance groups | Implemented | Live group types and selection controls; native group interaction pending |
-| Provider identity/refresh/health checks | Implemented | Identity-aware nodes; Windows URI/Base64, custom header, interval and manual refresh passed; individual healthcheck gate added |
+| Provider identity/refresh/health checks | Implemented | Identity-aware nodes; Windows URI/Base64, custom header, interval and manual refresh passed; provider-specific healthcheck API policy tests passed |
 | Individual/batch latency, URL/timeout/cancel | Implemented | Bounded queue and cancel tests; service cancels client wait, native operation remains bounded by 30s |
 | Scheduled latency and test address lists | Implemented | Saved address lists and interval controls; local clock/queue tests |
 | Rule/global/direct modes | Implemented | Managed runtime and live API controls; persistence checks |
@@ -47,7 +47,7 @@ Official references: [release](https://github.com/clash-verge-rev/clash-verge-re
 | Light/dark/system, presets/custom colors | Implemented | Persistent appearance and OS-mode UI checks |
 | CSS/group/tray icons/navigation customization | Implemented | Local asset validation and UI controls; native tray preview interaction pending |
 | Traffic/memory graphs and lightweight mode | Implemented | Counters/history, renderer teardown/recreation and memory polling tests |
-| Twelve media-unlock checks | Implemented | Exact official source hashes and four loopback-only Rust tests; native Windows compilation still pending |
+| Twelve media-unlock checks | Implemented | Exact official source hashes, four loopback-only Rust tests and native Windows release compilation passed; no external unlock result is claimed |
 | TLS client certificates/keys (mTLS) | Implemented | Explicit certificate/key file selection imports a validated pair into profile YAML as inline PEM; privileged file references stay rejected. Native checks validate certificate/key matching, malformed input and nested provider credentials. RSA/EC/DSA supported; other private-key algorithms need explicit compatibility coverage |
 
 ## Windows service and TUN acceptance
@@ -67,8 +67,12 @@ Open differences must stay visible in this document and release notes. No blanke
 
 ## Current implementation verification
 
-Local evidence: Windows-targeted service builds with zero warnings/errors; **49 native policy checks**, **16 Node service tests**, **4 provider bridge tests** and **4 Rust media tests** pass. The native suite adds a Windows-only locked-source check, so Windows reports one additional check. The service validates caller identity, confined assets, protected-image synchronization, private controller forwarding, per-provider healthcheck paths and inline TLS credentials. Rust tests invoke all twelve genuine upstream checks through a loopback proxy fixture that returns controlled failures, without contacting media services.
+The complete [Windows run 41076907235](https://github.com/Nilarf2/luma-proxy/actions/runs/41076907235) passed at commit `283c813b078fa593725638b1fc323789227e2294`. It passed **50 native service policy checks**, **114 Node tests: 110 passed, 4 skipped, 0 failed**, and **4 Rust media tests**. The four Node skips require a real core that is downloaded after that step; the later real-core service/TUN and packaged-app gates passed separately. The Linux integration checkpoint passed **114 Node tests: 113 passed, 1 Windows-only skip**. Local targeted suites also passed 16 Node service tests, 4 provider bridge tests and 49 native policy checks; Windows adds the locked-source check.
 
-[Windows run 41072645311](https://github.com/Nilarf2/luma-proxy/actions/runs/41072645311) verified service installation, repeated pipe requests, normal start/stop, secret removal, denied reload/upgrade, selected-core digest synchronization/restart, custom-header URI/Base64 provider import, automatic refresh and manual refresh. It also observed the real TUN adapter and confined route. HTTP forwarding then failed because the test origin had not implemented the HTTP proxy CONNECT tunnel; that fixture is corrected and locally exercised with actual TCP. TUN forwarding, restricted-token ownership and owner-death cleanup await the next Windows run. No failed run is counted as a complete service/TUN pass.
+The Windows service gate verified repeated pipe requests, normal start/stop, secret removal, denied reload/upgrade, protected core digest synchronization/restart, URI/Base64 providers, custom headers, automatic refresh and manual refresh. A real SAFER Basic User process retained the installing SID and reported Administrator role false. It started the privileged core, created a real TUN adapter and confined route, forwarded actual HTTP/TCP traffic through TUN to a loopback fixture, rejected a different owner's stop request, and removed the core/adapter after actual owner process death. This gate does not use an elevated owner fallback or an external traffic target.
 
-The earlier media source hash failure was Windows checkout CRLF conversion. Pinned upstream files now use byte-preserving Git attributes; all fourteen hashes were reverified with `core.autocrlf=true`. Windows Rust build/tests and complete packaged UI/recovery acceptance still await a passing current-head run. Interactive UAC install/cancel/uninstall, selected UWP exemptions, hotkeys and native tray interactions remain explicit manual checks.
+The packaged Windows EXE passed automatic startup diagnostics, concurrent manual retry, persisted opt-out, native login readback, killed-watchdog repair, local subscription import, bundled-core startup, registry system proxy, local HTTP forwarding, normal disconnect/exit restoration, native recovery after actual main-process termination, unavailable-protection reporting/rejection and renderer-error checks. Both unsigned x64 installer and portable EXEs passed PE checks and were uploaded with `SHA256SUMS.txt` in artifact `Luma-Windows-x64`.
+
+The earlier incomplete runs exposed fixture CONNECT handling and Windows checkout/PEM line-ending issues. The successful run includes those fixes: exact hashes for all fourteen pinned upstream media files, Windows Rust tests/release compilation and PEM normalization checks passed. Rust tests invoke all twelve genuine upstream checks through a loopback proxy returning controlled failures; they do not prove external media-unlock availability.
+
+Interactive UAC install/cancel/uninstall, selected UWP exemptions, physical hotkeys, native tray interactions and the administrator desktop TUN fallback remain manual VM checks. CI proves the restricted-token service route, not the interactive consent experience. The test-plan items above that lack explicit evidence remain acceptance tasks rather than implied passes.

@@ -33,6 +33,8 @@ Composition order is source profiles → selected profile → global YAML → pr
 
 See [capability and acceptance checklist](docs/PARITY.md) for known differences from Clash Verge Rev. This version does not establish complete feature parity. The release scope is Windows x64. Interactive UAC behavior remains a manual acceptance item; CI asserts a same-SID Basic User token for the TUN owner, with no administrator fallback. GEOIP/GEOSITE configurations may need first-use data downloads.
 
+[Windows CI 41076907235](https://github.com/Nilarf2/luma-proxy/actions/runs/41076907235) passed for commit `283c813`: native service policy, actual same-SID non-administrator TUN forwarding and owner-death cleanup, media source hashes/Rust tests, packaged Electron startup/proxy recovery, and both unsigned EXE builds. Physical tray/hotkey interactions, UWP exemptions and UAC consent/cancellation still require interactive acceptance.
+
 ## Development
 
 Node.js 24+, .NET 8 SDK and Rust 1.99.1+:
