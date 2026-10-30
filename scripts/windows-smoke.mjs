@@ -34,13 +34,17 @@ function completedHealth(health) {
   }
 }
 async function waitForHealth(page) {
-  await page.waitForFunction(async () => {
-    const { health } = await window.luma.invoke('state');
-    return health && !health.checking && health.checkedAt !== null;
-  }, undefined, { timeout: 60000 });
-  const { health } = await readState(page);
-  completedHealth(health);
-  return health;
+  const deadline = Date.now() + 60000;
+  let health;
+  while (Date.now() < deadline) {
+    ({ health } = await readState(page));
+    if (health?.checking === false && health.checkedAt) {
+      completedHealth(health);
+      return health;
+    }
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  throw Error(`Startup diagnostic did not finish within 60 seconds: ${JSON.stringify(health)}`);
 }
 async function healthyLocalChecks(page) {
   const health = await waitForHealth(page);
