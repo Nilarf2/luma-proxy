@@ -20,12 +20,13 @@ class WindowsProxy {
   async enable(port) {
     if (this.enabled) return;
     const previous = await read(); const ours = { ProxyEnable: 1, ProxyServer: `127.0.0.1:${port}`, ProxyOverride: '<local>;localhost;127.*;[::1]' };
-    fs.writeFileSync(this.file, JSON.stringify({ previous, ours }), { mode: 0o600 });
+    fs.writeFileSync(this.file, JSON.stringify({ previous, ours, ownerPid: process.pid }), { mode: 0o600 });
     try { await write(ours); this.enabled = true; } catch (e) { await this.restore(); throw e; }
   }
-  async restore() {
+  async restore(expectedOwner) {
     if (!fs.existsSync(this.file)) { this.enabled = false; return; }
-    const { previous, ours } = JSON.parse(fs.readFileSync(this.file, 'utf8'));
+    const { previous, ours, ownerPid } = JSON.parse(fs.readFileSync(this.file, 'utf8'));
+    if (expectedOwner !== undefined && ownerPid !== expectedOwner) return;
     const current = await read();
     // Another app or the user may have taken ownership; never overwrite them.
     if (current.ProxyServer === ours.ProxyServer && current.ProxyEnable === ours.ProxyEnable) await write(previous);

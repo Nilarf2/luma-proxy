@@ -6,7 +6,7 @@ const timer = setInterval(async () => {
   try { process.kill(Number(pid), 0); } catch {
     clearInterval(timer);
     let failed = false;
-    try { await proxy.restore(); } catch { failed = true; }
+    try { await proxy.restore(Number(pid)); } catch { failed = true; }
     // Only stop the exact bundled kernel whose recorded parent is this app.
     if (binary && /^\d+$/.test(pid)) {
       const encoded = Buffer.from(binary, 'utf8').toString('base64');
