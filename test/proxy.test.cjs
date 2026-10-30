@@ -5,3 +5,44 @@ test('recovery journal survives process restart and failed enable',async()=>{con
 }finally{fs.rmSync(dir,{force:true,recursive:true});}});
 
 test('old watchdog cannot restore a new instance journal',async()=>{const dir=fs.mkdtempSync(path.join(os.tmpdir(),'luma-owner-'));try{const f=fixture(dir);await f.proxy.enable(12346);await f.proxy.restore(9999);assert.equal(f.get().ProxyServer,'127.0.0.1:12346');assert.equal(fs.existsSync(path.join(dir,'proxy-recovery.json')),true);await f.proxy.restore(12345);assert.equal(f.get().ProxyServer,'previous:80');}finally{fs.rmSync(dir,{force:true,recursive:true});}});
+
+test('enable recovers a stale journal before saving the next snapshot', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'luma-stale-proxy-'));
+  try {
+    const old = fixture(dir);
+    const original = { ...old.get() };
+    await old.proxy.enable(12345);
+    const restarted = fixture(dir);
+    restarted.set(old.get());
+    await restarted.proxy.enable(12346);
+    assert.equal(restarted.get().ProxyServer, '127.0.0.1:12346');
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'proxy-recovery.json'), 'utf8')).previous, original);
+    await restarted.proxy.restore();
+    assert.deepEqual(restarted.get(), original);
+  } finally {
+    fs.rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test('enable preserves a stale journal when recovery fails and allows a retry', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'luma-failed-recovery-'));
+  try {
+    const old = fixture(dir);
+    const original = { ...old.get() };
+    await old.proxy.enable(12345);
+    const journal = path.join(dir, 'proxy-recovery.json');
+    const saved = fs.readFileSync(journal, 'utf8');
+    const restarted = fixture(dir);
+    restarted.set(old.get());
+    restarted.fail();
+    await assert.rejects(restarted.proxy.enable(12346), /write failed/);
+    assert.equal(fs.readFileSync(journal, 'utf8'), saved);
+    assert.equal(restarted.get().ProxyServer, '127.0.0.1:12345');
+    assert.equal(restarted.proxy.enabled, false);
+    await restarted.proxy.enable(12346);
+    await restarted.proxy.restore();
+    assert.deepEqual(restarted.get(), original);
+  } finally {
+    fs.rmSync(dir, { force: true, recursive: true });
+  }
+});

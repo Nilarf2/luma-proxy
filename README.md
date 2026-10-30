@@ -41,7 +41,7 @@ GitHub Actions builds on Windows. `npm run core:linux` enables an isolated real-
 
 ## Validation
 
-Automated checks cover subscription validation, configuration overrides, profile storage, proxy ownership/recovery via a mocked registry, and an isolated real Mihomo controller/proxy lifecycle. UI tests cover navigation, import, settings, node switching and errors with a deterministic bridge fixture. Windows CI builds and checks the EXE headers. Windows installation, SmartScreen, user registry integration and tray behavior require a real Windows desktop acceptance run.
+Automated checks cover subscription validation, configuration overrides, profile storage, proxy ownership/recovery via a mocked registry, and an isolated real Mihomo controller/proxy lifecycle. UI tests cover navigation, import, settings, node switching and errors with a deterministic bridge fixture. Windows CI runs the packaged EXE to verify local YAML import, the bundled kernel, real HTTP forwarding, Windows registry proxy settings, disconnect/normal-exit restoration, and recovery after forced main-process termination. It also checks both EXE headers and records SHA-256 checksums. Installer interaction, SmartScreen, tray presentation, and long-term behavior still require personal Windows desktop acceptance. Configurations using GEOIP/GEOSITE may need online data downloads on first use.
 
 ## License
 

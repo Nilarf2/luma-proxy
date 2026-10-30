@@ -19,6 +19,8 @@ class WindowsProxy {
   constructor(dir) { this.file = path.join(dir, 'proxy-recovery.json'); this.enabled = false; }
   async enable(port) {
     if (this.enabled) return;
+    // Preserve the original snapshot until recovery has completed successfully.
+    if (fs.existsSync(this.file)) await this.restore();
     const previous = await read(); const ours = { ProxyEnable: 1, ProxyServer: `127.0.0.1:${port}`, ProxyOverride: '<local>;localhost;127.*;[::1]' };
     fs.writeFileSync(this.file, JSON.stringify({ previous, ours, ownerPid: process.pid }), { mode: 0o600 });
     try { await write(ours); this.enabled = true; } catch (e) { await this.restore(); throw e; }

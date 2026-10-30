@@ -11,7 +11,10 @@ $file=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${journal}'))
 $exe=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${exe}'))
 $log=$file+'.watchdog.log'
 Add-Content -LiteralPath $log -Value ('watching ${Number(pid)} at '+(Get-Date))
-while(Get-CimInstance Win32_Process -Filter 'ProcessId = ${Number(pid)}') { Start-Sleep -Milliseconds 800 }
+while($true) {
+ try { if(-not (Get-CimInstance Win32_Process -Filter 'ProcessId = ${Number(pid)}')) { break } } catch { }
+ Start-Sleep -Milliseconds 800
+}
 Add-Content -LiteralPath $log -Value 'parent exited'
 try {
  if(Test-Path -LiteralPath $file) {
@@ -41,8 +44,9 @@ try { Get-CimInstance Win32_Process -Filter 'ParentProcessId = ${Number(pid)}' |
   const watcherPid = await ps(`
 $f=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${file64}'))
 $p=Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe'
-$line='"'+$p+'" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "'+$f+'"'
-$r=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine=$line}
+$line='"'+$p+'" -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "'+$f+'"'
+$startup=New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ShowWindow=[UInt16]0}
+$r=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine=$line;ProcessStartupInformation=$startup}
 if($r.ReturnValue -ne 0) { throw 'Recovery process could not start' }
 $r.ProcessId
 `);
