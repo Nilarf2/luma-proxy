@@ -8,10 +8,14 @@ function startWatchdog(pid, dir, binary) {
 $ErrorActionPreference='Stop'
 $file=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${journal}'))
 $exe=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${exe}'))
+$log=$file+'.watchdog.log'
+Add-Content -LiteralPath $log -Value ('watching ${Number(pid)} at '+(Get-Date))
 Wait-Process -Id ${Number(pid)} -ErrorAction SilentlyContinue
+Add-Content -LiteralPath $log -Value 'parent exited'
 try {
  if(Test-Path -LiteralPath $file) {
   $j=Get-Content -LiteralPath $file -Raw | ConvertFrom-Json
+  Add-Content -LiteralPath $log -Value ('journal owner '+$j.ownerPid)
   if($j.ownerPid -eq ${Number(pid)}) {
    $key='HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings'
    $current=Get-ItemProperty $key
@@ -27,7 +31,7 @@ try {
    if((Get-Content -LiteralPath $file -Raw | ConvertFrom-Json).ownerPid -eq ${Number(pid)}) { Remove-Item -LiteralPath $file -Force }
   }
  }
-} catch { }
+} catch { Add-Content -LiteralPath $log -Value ($_ | Out-String) }
 try { Get-CimInstance Win32_Process -Filter 'ParentProcessId = ${Number(pid)}' | Where-Object { $_.ExecutablePath -eq $exe } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } } catch { }
 `;
   const watcher = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { detached: true, stdio: 'ignore', windowsHide: true });
