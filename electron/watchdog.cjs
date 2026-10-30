@@ -1,8 +1,8 @@
-const { spawn } = require('node:child_process');
+const { ps } = require('./windows-proxy.cjs');
 const path = require('node:path');
 const fs = require('node:fs');
-// A native Windows process survives termination of the Electron process tree.
-function startWatchdog(pid, dir, binary) {
+// Start outside the Electron process job so recovery survives forced termination.
+async function startWatchdog(pid, dir, binary) {
   const journal = Buffer.from(path.join(dir, 'proxy-recovery.json'), 'utf8').toString('base64');
   const exe = Buffer.from(binary, 'utf8').toString('base64');
   const script = `
@@ -35,11 +35,24 @@ try {
 } catch { Add-Content -LiteralPath $log -Value ($_ | Out-String) }
 try { Get-CimInstance Win32_Process -Filter 'ParentProcessId = ${Number(pid)}' | Where-Object { $_.ExecutablePath -eq $exe } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } } catch { }
 `;
-  const scriptFile=path.join(dir,'recovery-watchdog.ps1');fs.writeFileSync(scriptFile,'\ufeff'+script,'utf8');
-  const output=fs.openSync(path.join(dir,'watchdog-output.log'),'a');
-  const watcher = spawn(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptFile], { detached: false, stdio: ['ignore',output,output], windowsHide: true });
-  watcher.on('spawn',()=>fs.writeFileSync(path.join(dir,'watchdog-launch.json'),JSON.stringify({pid:watcher.pid,owner:pid})));
-  watcher.on('exit',(code,signal)=>fs.appendFileSync(path.join(dir,'watchdog-output.log'),JSON.stringify({code,signal})));
-  watcher.on('error', error => fs.appendFileSync(path.join(dir,'watchdog-output.log'),error.message)); watcher.unref(); fs.closeSync(output);
+  const scriptFile = path.join(dir, `recovery-watchdog-${pid}.ps1`);
+  fs.writeFileSync(scriptFile, '\ufeff' + script, 'utf8');
+  const file64 = Buffer.from(scriptFile, 'utf8').toString('base64');
+  const watcherPid = await ps(`
+$f=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${file64}'))
+$p=Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+$line='"'+$p+'" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "'+$f+'"'
+$r=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine=$line}
+if($r.ReturnValue -ne 0) { throw 'Recovery process could not start' }
+$r.ProcessId
+`);
+  fs.writeFileSync(path.join(dir, 'watchdog-launch.json'), JSON.stringify({ pid: Number(watcherPid), owner: pid }));
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try {
+      if (fs.readFileSync(path.join(dir, 'proxy-recovery.json.watchdog.log'), 'utf8').includes(`watching ${pid} at`)) return;
+    } catch {}
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  throw new Error('Windows recovery process did not become ready');
 }
 module.exports = { startWatchdog };

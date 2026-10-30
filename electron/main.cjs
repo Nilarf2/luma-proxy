@@ -30,7 +30,7 @@ function handle(name, fn) { ipcMain.handle(name, async (event, payload) => { if 
 app.whenReady().then(async () => {
   store = new Store(app.getPath('userData')); proxy = new WindowsProxy(store.dir);
   if (process.platform === 'win32') { try { await proxy.restore(); } catch { lastError = '恢复系统代理失败，请检查 Windows 代理设置'; }
-    startWatchdog(process.pid, store.dir, path.join(asset('core'), 'mihomo.exe'));
+    await startWatchdog(process.pid, store.dir, path.join(asset('core'), 'mihomo.exe'));
   }
   const coreDir = path.join(store.dir, 'core'); fs.mkdirSync(coreDir, { recursive: true });
   const bundled = asset('core'); if (fs.existsSync(bundled)) for (const f of fs.readdirSync(bundled)) if (/\.(dat|mmdb)$/.test(f) && !fs.existsSync(path.join(coreDir, f))) fs.copyFileSync(path.join(bundled, f), path.join(coreDir, f));
