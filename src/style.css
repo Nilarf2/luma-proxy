@@ -14,3 +14,145 @@ button,input,select,textarea{transition:background-color 140ms,border-color 140m
 .importing-drop main{outline:2px solid var(--accent);outline-offset:-10px}.importing-drop .modal{outline:2px solid var(--accent);outline-offset:4px}.settings-details .setting-control select{max-width:100%}.settings-details>.setting-row{margin-top:8px}
 
 .node-entry{display:flex;align-items:center;border-bottom:1px solid var(--line);gap:8px}.node-entry .node-row{border-bottom:0;min-width:0;flex:1}.node-test{flex-shrink:0;margin-right:4px}
+
+/* Quiet depth: cards and type scale keep the white canvas airy while giving each setting group a physical surface. */
+:root {
+  --card-radius: 16px;
+  --card-shadow: 0 12px 30px rgba(22, 28, 45, .055), 0 2px 6px rgba(22, 28, 45, .035);
+  --card-shadow-hover: 0 16px 36px rgba(22, 28, 45, .085), 0 3px 8px rgba(22, 28, 45, .045);
+  --font-ui: "Avenir Next", "Segoe UI Variable", "SF Pro Text", "Noto Sans CJK SC", "Microsoft YaHei UI", sans-serif;
+}
+body {
+  font-family: var(--font-ui);
+  letter-spacing: -.008em;
+}
+h1, h2, .brand, .button, .nav-item, input, select, textarea {
+  font-family: var(--font-ui);
+}
+h1 {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  letter-spacing: -.035em;
+}
+h1 > small, .bilingual-en, .nav-copy small {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 450;
+  letter-spacing: .045em;
+  text-transform: uppercase;
+}
+.bilingual-en {
+  display: block;
+  margin-top: 3px;
+  letter-spacing: .035em;
+  text-transform: none;
+}
+.nav-copy {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.nav-copy small {
+  font-size: 9px;
+  opacity: .7;
+  letter-spacing: .04em;
+}
+[data-theme="dark"] {
+  --card-shadow: 0 14px 34px rgba(0, 0, 0, .24), 0 2px 7px rgba(0, 0, 0, .18);
+  --card-shadow-hover: 0 18px 40px rgba(0, 0, 0, .3), 0 3px 9px rgba(0, 0, 0, .2);
+}
+.section {
+  margin-bottom: 24px;
+  padding: 4px 22px 10px;
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--line) 86%, transparent);
+  border-radius: var(--card-radius);
+  box-shadow: var(--card-shadow);
+  overflow: hidden;
+  transition: box-shadow 180ms ease, border-color 180ms ease;
+}
+.section:hover {
+  border-color: color-mix(in srgb, var(--line) 68%, var(--accent));
+  box-shadow: var(--card-shadow-hover);
+}
+.section-title {
+  min-height: 52px;
+  margin: 0 -22px 2px;
+  padding: 14px 22px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+}
+.section-title h2 {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 15px;
+  letter-spacing: -.015em;
+}
+.section-title h2 .bilingual-en {
+  display: inline;
+  margin: 0;
+  font-size: 9px;
+  letter-spacing: .05em;
+}
+.setting-row:last-child {
+  border-bottom: 0;
+}
+.connection-bar {
+  margin-bottom: 18px;
+  padding: 19px 21px;
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--line) 86%, transparent);
+  border-radius: var(--card-radius);
+  box-shadow: var(--card-shadow);
+}
+.stats-grid {
+  margin-bottom: 24px;
+  padding: 20px 21px;
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--line) 86%, transparent);
+  border-radius: var(--card-radius);
+  box-shadow: var(--card-shadow);
+}
+.stats-grid > div + div {
+  padding-left: 18px;
+  border-left: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+}
+.profile-row {
+  margin-bottom: 11px;
+  padding: 19px 20px;
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--line) 86%, transparent);
+  border-radius: 14px;
+  box-shadow: var(--card-shadow);
+  transition: box-shadow 180ms ease, border-color 180ms ease, transform 180ms ease;
+}
+.profile-row:hover {
+  border-color: color-mix(in srgb, var(--line) 62%, var(--accent));
+  box-shadow: var(--card-shadow-hover);
+  transform: translateY(-1px);
+}
+.profile-row.selected {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  box-shadow: 0 12px 30px color-mix(in srgb, var(--accent) 10%, transparent), var(--card-shadow);
+}
+.settings-details {
+  padding: 14px 0;
+}
+.modal {
+  border-radius: 16px;
+  box-shadow: 0 24px 70px rgba(22, 28, 45, .18), 0 4px 12px rgba(22, 28, 45, .08);
+}
+[data-theme="dark"] .modal {
+  box-shadow: 0 24px 70px rgba(0, 0, 0, .48), 0 4px 12px rgba(0, 0, 0, .3);
+}
+.button, input, select, textarea, .search-field, .segmented {
+  border-radius: 8px;
+}
+.button {
+  box-shadow: 0 1px 2px rgba(22, 28, 45, .035);
+}
+.button.primary {
+  box-shadow: 0 5px 14px color-mix(in srgb, var(--accent) 22%, transparent);
+}
