@@ -71,7 +71,10 @@ function registerController(ctx) {
   const allowedOrigin = origin => !origin || origin === `http://127.0.0.1:${current.port}` || current.origins.includes(origin);
   const authenticated = value => { const expected = Buffer.from(`Bearer ${current.secret}`), supplied = Buffer.from(String(value || '')); return supplied.length === expected.length && crypto.timingSafeEqual(supplied, expected); };
   const stopStreams = () => { for (const client of streams.clients) client.terminate(); sampleTask = undefined; sampleAt = 0; };
-  const sampleStats = () => { if (!sampleTask || Date.now() - sampleAt >= 1000) { sampleAt = Date.now(); sampleTask = Promise.resolve().then(() => ctx.engine.stats()); } return sampleTask; };
+  // Stream timers tick every second.  Keep the cache slightly shorter than
+  // that interval so a tick that fires a few milliseconds early cannot reuse
+  // the previous counter sample and report a false zero-rate update.
+  const sampleStats = () => { if (!sampleTask || Date.now() - sampleAt >= 900) { sampleAt = Date.now(); sampleTask = Promise.resolve().then(() => ctx.engine.stats()); } return sampleTask; };
   streams.on('connection', (client, _req, route) => {
     let loading = false, previous = null, logTail = [];
     const send = value => { const text = JSON.stringify(value); if (client.bufferedAmount > 1024 * 1024 || Buffer.byteLength(text) > 4 * 1024 * 1024) return client.terminate(); if (client.readyState === WebSocket.OPEN) client.send(text); };
