@@ -1,12 +1,24 @@
 const YAML = require('yaml');
 const crypto = require('node:crypto');
 const { normalizeSettings } = require('./settings.cjs');
-const { uriProfile } = require('./uri.cjs');
+const { uriProfile, decode64 } = require('./uri.cjs');
 const MAX_PROFILE = 8 * 1024 * 1024;
 function parseProfile(text) {
   if (typeof text !== 'string' || Buffer.byteLength(text) > MAX_PROFILE) throw Error('配置文件不能超过 8 MB');
   let doc;
-  try { doc = YAML.parse(text, { maxAliasCount: 50, uniqueKeys: true }); } catch { try { doc = uriProfile(text); } catch { throw Error('无法解析配置，请导入有效的 YAML 或节点链接'); } }
+  try { doc = YAML.parse(text, { maxAliasCount: 50, uniqueKeys: true }); } catch { doc = null; }
+  // Some providers wrap a complete Clash/Mihomo YAML document in Base64.
+  // Decode it before falling back to line-oriented URI subscriptions.
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) {
+    try {
+      const decoded = decode64(text);
+      const decodedDoc = YAML.parse(decoded, { maxAliasCount: 50, uniqueKeys: true });
+      if (decodedDoc && typeof decodedDoc === 'object' && !Array.isArray(decodedDoc)) doc = decodedDoc;
+    } catch { /* URI/Base64 URI parsing below provides the final error. */ }
+  }
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) {
+    try { doc = uriProfile(text); } catch { throw Error('无法解析配置，请导入有效的 YAML、Base64 订阅或节点链接'); }
+  }
   if (!doc || typeof doc !== 'object' || Array.isArray(doc) || (!Array.isArray(doc.proxies) && !doc['proxy-providers'])) { try { doc = uriProfile(text); } catch { throw Error('需要 Clash / Mihomo YAML、Base64 订阅或节点链接'); } }
   const directOnly = Array.isArray(doc.proxies) && !doc.proxies.length && Array.isArray(doc.rules) && doc.rules.length > 0 && doc.rules.every(rule => typeof rule === 'string') && doc.rules.some(rule => /^MATCH\s*,\s*DIRECT\s*$/i.test(rule));
   if (!(doc.proxies?.length || Object.keys(doc['proxy-providers'] || {}).length || directOnly)) throw Error('配置中没有代理节点或直连规则');
