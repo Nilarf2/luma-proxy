@@ -1,4 +1,4 @@
-const { latencyRequest } = require('./settings.cjs');
+const { latencyRequest, normalizeSettings } = require('./settings.cjs');
 
 const canceled = () => Error('已取消延迟测试');
 const isRecord = value => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -26,13 +26,29 @@ function normalizeDelayResult(value) {
   return result;
 }
 
+function requestUrls(settings, payload, request) {
+  // An explicit URL is a one-off probe. Saved alternatives are used for the
+  // normal node test, preserving the selected URL as the first attempt.
+  if (isRecord(payload) && payload.url !== undefined) return [request.url];
+  const urls = [request.url];
+  for (const value of normalizeSettings(settings).latency.urls) {
+    try {
+      const candidate = latencyRequest(settings, { name: request.name, url: value, timeout: request.timeout }).url;
+      if (!urls.includes(candidate)) urls.push(candidate);
+    } catch { /* Ignore a stale malformed alternative. */ }
+  }
+  return urls;
+}
+
 class DelayTasks {
   constructor({ engine, settings, concurrency = 4, limit = 128 }) { this.engine = engine; this.settings = settings; this.concurrency = concurrency; this.limit = limit; this.tasks = new Map(); this.queue = []; this.active = 0; this.sequence = 0; }
   run(payload) {
     if (!this.engine.ready) return Promise.reject(Error('请先连接'));
     let request, provider, id;
     try {
-      request = latencyRequest(this.settings(), payload);
+      const settings = this.settings();
+      request = latencyRequest(settings, payload);
+      request.urls = requestUrls(settings, payload, request);
       provider = typeof payload === 'object' ? payload.provider : undefined;
       if (provider !== undefined && provider !== null && (typeof provider !== 'string' || !provider || provider.length > 1024 || /[\x00-\x1f\x7f]/.test(provider))) throw Error('Provider 参数无效');
       id = typeof payload === 'object' ? payload.requestId : undefined;
@@ -62,14 +78,31 @@ class DelayTasks {
       const task = this.queue.shift(); if (task.finished) continue;
       if (!this.engine.ready) { this.finish(task, canceled()); continue; }
       this.active++;
-      const route = task.provider ? `/providers/proxies/${encodeURIComponent(task.provider)}/${encodeURIComponent(task.name)}/healthcheck` : `/proxies/${encodeURIComponent(task.name)}/delay`;
-      const endpoint = `${route}?timeout=${task.timeout}&url=${encodeURIComponent(task.url)}`;
-      const signal = AbortSignal.any([task.controller.signal, AbortSignal.timeout(task.timeout + 2000)]);
-      let abort;
-      const stopped = new Promise((_, reject) => { abort = () => reject(task.controller.signal.aborted ? canceled() : Error('延迟测试超时')); if (signal.aborted) abort(); else signal.addEventListener('abort', abort, { once: true }); });
-      Promise.race([Promise.resolve().then(() => this.engine.api(endpoint, 'GET', undefined, { signal })), stopped])
-        .then(value => this.finish(task, null, normalizeDelayResult(value)), error => this.finish(task, error))
-        .finally(() => { signal.removeEventListener('abort', abort); this.active--; this.pump(); });
+      Promise.resolve().then(async () => {
+        const deadline = Date.now() + task.timeout + 2000;
+        let lastError;
+        for (const url of task.urls) {
+          if (task.controller.signal.aborted) throw canceled();
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) break;
+          const timer = AbortSignal.timeout(Math.max(1, remaining));
+          const signal = AbortSignal.any([task.controller.signal, timer]);
+          const route = task.provider ? `/providers/proxies/${encodeURIComponent(task.provider)}/${encodeURIComponent(task.name)}/healthcheck` : `/proxies/${encodeURIComponent(task.name)}/delay`;
+          const endpoint = `${route}?timeout=${Math.min(task.timeout, Math.max(1, remaining))}&url=${encodeURIComponent(url)}`;
+          try {
+            const value = await this.engine.api(endpoint, 'GET', undefined, { signal });
+            return normalizeDelayResult(value);
+          } catch (error) {
+            if (task.controller.signal.aborted) throw canceled();
+            lastError = error;
+            if (timer.aborted || Date.now() >= deadline) break;
+          }
+        }
+        const result = normalizeDelayResult(-1);
+        if (lastError?.message) result.error = String(lastError.message).slice(0, 300);
+        return result;
+      }).then(value => this.finish(task, null, value), error => this.finish(task, error))
+        .finally(() => { this.active--; this.pump(); });
     }
   }
 }

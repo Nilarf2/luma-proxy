@@ -37,6 +37,45 @@ test('delay queue bounds requests, uses provider endpoint and rejects duplicate 
   await new Promise(r=>setImmediate(r));assert.equal(calls.length,2);assert.match(calls[0],/^\/providers\/proxies\/A%20B\/Same\/healthcheck\?/);
   releases.shift()();await a;await new Promise(r=>setImmediate(r));assert.equal(calls.length,3);releases.splice(0).forEach(r=>r());await Promise.all([b,c]);assert.equal(maximum,2);
 });
+test('delay probes configured fallback URLs within one budget', async () => {
+  const hits = [];
+  const fixture = http.createServer((req, res) => {
+    hits.push(req.url);
+    const path = new URL(req.url, 'http://127.0.0.1').pathname;
+    res.writeHead(path === '/good' ? 204 : 503);
+    res.end();
+  });
+  await new Promise(resolve => fixture.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${fixture.address().port}`;
+  const settings = defaults();
+  settings.latency = { url: `${base}/bad`, urls: [`${base}/bad`, `${base}/good`], timeout: 500 };
+  const engine = {
+    ready: true,
+    api: async endpoint => {
+      const response = await fetch(new URL(endpoint, 'http://127.0.0.1').searchParams.get('url'), { method: 'HEAD' });
+      if (!response.ok) throw Error(`fixture status ${response.status}`);
+      return { delay: 17 };
+    }
+  };
+  const tasks = new DelayTasks({ engine, settings: () => settings });
+  try {
+    const success = await tasks.run('Local');
+    assert.deepEqual(success, { delay: 17, latency: 17, status: 'good' });
+    assert.deepEqual(hits, ['/bad', '/good']);
+
+    settings.latency.url = `${base}/bad`;
+    settings.latency.urls = [`${base}/bad`, `${base}/also-bad`];
+    const failed = await tasks.run('Local');
+    assert.equal(failed.delay, -1);
+    assert.equal(failed.status, 'timeout');
+    assert.match(failed.error, /fixture status 503/);
+    assert.deepEqual(hits, ['/bad', '/good', '/bad', '/also-bad']);
+  } finally {
+    tasks.cancel();
+    fixture.closeAllConnections();
+    await new Promise(resolve => fixture.close(resolve));
+  }
+});
 test('cancel stops active loopback fetch and queued requests; disconnect prevents new work', async () => {
   let requests=0,arrived;const got=new Promise(r=>arrived=r);
   const server=http.createServer((_req,res)=>{requests++;arrived();});
