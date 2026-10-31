@@ -106,11 +106,8 @@ function App() {
   useEffect(() => { if (!appearance.showTrafficHistory) setHistory([]); }, [appearance.showTrafficHistory]);
   useEffect(() => {
     document.documentElement.lang = locale === 'en' ? 'en' : 'zh-CN';
-    const sync = () => translateDom(document.body);
-    sync();
-    const observer = new MutationObserver(sync);
-    observer.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['aria-label', 'placeholder'] });
-    return () => observer.disconnect();
+    const frame = requestAnimationFrame(() => translateDom(document.body));
+    return () => cancelAnimationFrame(frame);
   }, [locale, page, state.busy, state.running, modal]);
   const changeLocale = next => { const value = next === 'en' ? 'en' : 'zh'; setLocale(value); try { localStorage.setItem('luma-locale', value); } catch {} };
   useEffect(() => { if (state.lastError) notice(state.lastError, true); }, [state.lastError]);

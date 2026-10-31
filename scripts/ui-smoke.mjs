@@ -185,6 +185,13 @@ try {
   await page.getByText('暂无日志', { exact: true }).waitFor();
 
   await nav('设置').click();
+  await page.getByLabel('界面语言', { exact: true }).selectOption('en');
+  await page.getByRole('heading', { name: 'Settings', exact: true }).waitFor();
+  await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: 'Overview', exact: true }).waitFor();
+  assert.equal(await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: '概览', exact: true }).count(), 0);
+  assert.equal(await page.getByLabel('Language', { exact: true }).inputValue(), 'en');
+  await page.getByLabel('Language', { exact: true }).selectOption('zh');
+  await page.getByRole('heading', { name: '设置', exact: true }).waitFor();
   assert.equal(await page.getByRole('switch', { name: '流量与内存记录', exact: true }).getAttribute('aria-checked'), 'false');
   await page.getByRole('button', { name: '选择托盘图标', exact: true }).click();
   await page.getByAltText('自定义托盘图标').waitFor();
