@@ -178,7 +178,7 @@ app.whenReady().then(async () => {
   const delayNode = payload => delayTasks.run(payload);
   handle('node:delay', delayNode);
   handle('node:delay:cancel', payload => delayTasks.cancel(payload));
-  let lastLatencyAt = Date.now(); const latencyTimer = setInterval(async () => { const interval = store.data.latency.intervalMinutes; if (quitting || busy || !engine.ready || interval <= 0 || Date.now() - lastLatencyAt < interval * 60000) return; lastLatencyAt = Date.now(); try { const values = await engine.api('/proxies'); for (const value of Object.values(values.proxies || {})) { if (!engine.ready || quitting) break; if (Array.isArray(value.all)) await delayNode(value.name).catch(() => {}); } } catch {} }, 30000); latencyTimer.unref(); app.once('will-quit',()=>clearInterval(latencyTimer));
+  let lastLatencyAt = Date.now(), latencyRunning = false; const latencyTimer = setInterval(async () => { const interval = store.data.latency.intervalMinutes; if (latencyRunning || quitting || busy || !engine.ready || interval <= 0 || Date.now() - lastLatencyAt < interval * 60000) return; latencyRunning = true; lastLatencyAt = Date.now(); try { const values = await engine.api('/proxies'); for (const value of Object.values(values.proxies || {})) { if (!engine.ready || quitting) break; if (Array.isArray(value.all)) await delayNode(value.name).catch(() => {}); } } catch {} finally { latencyRunning = false; } }, 30000); latencyTimer.unref(); app.once('will-quit',()=>clearInterval(latencyTimer));
   handle('connections:clear', () => engine.ready ? engine.api('/connections', 'DELETE') : null);
   handle('logs', () => engine.logs);
   handle('settings', payload => exclusive(() => updateSettings(payload)));

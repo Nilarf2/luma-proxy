@@ -1,6 +1,31 @@
 const { latencyRequest } = require('./settings.cjs');
 
 const canceled = () => Error('已取消延迟测试');
+const isRecord = value => !!value && typeof value === 'object' && !Array.isArray(value);
+
+// Keep the renderer contract stable even when a core/API implementation returns
+// an empty body, a numeric value, or a non-numeric delay.  The UI can use the
+// status field for colour without having to duplicate response-shape checks.
+function delayStatus(value) {
+  const delay = Number(value);
+  if (!Number.isFinite(delay) || delay < 0) return 'timeout';
+  if (delay === 0) return 'unknown';
+  if (delay < 200) return 'good';
+  if (delay < 500) return 'warning';
+  return 'bad';
+}
+
+function normalizeDelayResult(value) {
+  const result = isRecord(value) ? { ...value } : {};
+  const raw = result.delay ?? result.latency ?? (typeof value === 'number' ? value : undefined);
+  const numeric = Number(raw);
+  const delay = Number.isFinite(numeric) && numeric >= 0 ? Math.round(numeric) : -1;
+  result.delay = delay;
+  result.latency = delay >= 0 ? delay : null;
+  result.status = delayStatus(delay);
+  return result;
+}
+
 class DelayTasks {
   constructor({ engine, settings, concurrency = 4, limit = 128 }) { this.engine = engine; this.settings = settings; this.concurrency = concurrency; this.limit = limit; this.tasks = new Map(); this.queue = []; this.active = 0; this.sequence = 0; }
   run(payload) {
@@ -43,9 +68,9 @@ class DelayTasks {
       let abort;
       const stopped = new Promise((_, reject) => { abort = () => reject(task.controller.signal.aborted ? canceled() : Error('延迟测试超时')); if (signal.aborted) abort(); else signal.addEventListener('abort', abort, { once: true }); });
       Promise.race([Promise.resolve().then(() => this.engine.api(endpoint, 'GET', undefined, { signal })), stopped])
-        .then(value => this.finish(task, null, value), error => this.finish(task, error))
+        .then(value => this.finish(task, null, normalizeDelayResult(value)), error => this.finish(task, error))
         .finally(() => { signal.removeEventListener('abort', abort); this.active--; this.pump(); });
     }
   }
 }
-module.exports = { DelayTasks };
+module.exports = { DelayTasks, delayStatus, normalizeDelayResult };

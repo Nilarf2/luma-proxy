@@ -4,7 +4,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { DelayTasks } = require('../electron/delay.cjs');
+const { DelayTasks, delayStatus, normalizeDelayResult } = require('../electron/delay.cjs');
 const { Engine } = require('../electron/engine.cjs');
 const { defaults } = require('../electron/settings.cjs');
 const { groupsWithSources } = require('../electron/nodes.cjs');
@@ -19,6 +19,14 @@ test('provider sources retain duplicate identity and do not label unrelated loca
   const included=groupsWithSources(proxies,providers,[{name:'Group','include-all':true},{name:'Local','include-all-proxies':true}],['Same']);
   assert.deepEqual(included[0].nodes.filter(n=>n.name==='Same').map(n=>n.provider),[null,'A','B']);
   assert.deepEqual(included[1].nodes.filter(n=>n.name==='Same').map(n=>n.provider),[null]);
+});
+test('delay results are normalized for renderer status and colour mapping', () => {
+  assert.deepEqual(normalizeDelayResult({ delay: 131.4, extra: 'kept' }), { delay: 131, latency: 131, status: 'good', extra: 'kept' });
+  assert.deepEqual(normalizeDelayResult({ latency: '420' }), { delay: 420, latency: 420, status: 'warning' });
+  assert.deepEqual(normalizeDelayResult(801), { delay: 801, latency: 801, status: 'bad' });
+  assert.deepEqual(normalizeDelayResult(null), { delay: -1, latency: null, status: 'timeout' });
+  assert.equal(delayStatus(0), 'unknown');
+  assert.equal(delayStatus(-1), 'timeout');
 });
 test('delay queue bounds requests, uses provider endpoint and rejects duplicate IDs', async () => {
   let running=0,maximum=0;const calls=[],releases=[];
