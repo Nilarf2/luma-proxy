@@ -1,12 +1,12 @@
 # Windows capability audit
 
-Audit date: 2026-10-30. This compares official Clash Verge Rev **v2.5.8** (2026-10-09) with the current Luma **0.2.0 Windows x64 implementation**. It separates implemented behavior from actual verification. It does not treat Linux/macOS or additional CPU architectures as requirements for this Windows x64 release. A working Mihomo configuration alone does not establish equivalent application controls.
+Audit date: 2026-10-30. This compares official Clash Verge Rev **v2.5.8** (2026-10-09) with the current Luma **0.2.1 Windows x64 implementation**. It separates implemented behavior from actual verification. It does not treat Linux/macOS or additional CPU architectures as requirements for this Windows x64 release. A working Mihomo configuration alone does not establish equivalent application controls.
 
 Official references: [release](https://github.com/clash-verge-rev/clash-verge-rev/releases/tag/v2.5.8), [configuration model](https://github.com/clash-verge-rev/clash-verge-rev/blob/v2.5.8/src-tauri/src/config/verge.rs), [profile model](https://github.com/clash-verge-rev/clash-verge-rev/blob/v2.5.8/src/types/global.d.ts), [profile import](https://www.clashverge.dev/guide/profile.html), [extensions](https://www.clashverge.dev/guide/extend.html), [URL schemes and subscription headers](https://www.clashverge.dev/guide/url_schemes.html), [Windows/service guidance](https://www.clashverge.dev/faq/windows.html), [hotkeys](https://github.com/clash-verge-rev/clash-verge-rev/blob/v2.5.8/src-tauri/src/core/hotkey.rs), [themes](https://www.clashverge.dev/guide/css_injection.html).
 
 `Implemented` means application controls and backend behavior exist; it does not mean every native interaction passed. `Partial` identifies an actual remaining difference. Verification below names local evidence, the successful Windows CI run and remaining manual checks.
 
-| Capability in CVR | Luma 0.2.0 Windows x64 | Verification / remaining acceptance |
+| Capability in CVR | Luma 0.2.1 Windows x64 | Verification / remaining acceptance |
 | --- | --- | --- |
 | Bundled Mihomo | Implemented | Real-core local integration; packaged Windows connect/exit gate |
 | TUN stacks, DNS hijack, routes and interfaces | Implemented | Real Windows adapter, confined route, local-only TCP forwarding and owner-death cleanup passed; DNS variants remain configuration-level coverage |
